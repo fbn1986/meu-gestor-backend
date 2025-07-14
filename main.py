@@ -187,16 +187,28 @@ def call_dify_api(user_id: str, text_query: str = None):
         logging.error("Resposta da Dify não era JSON válido.")
         return None
 
+# <<< VERSÃO CORRIGIDA >>>
 def send_whatsapp_message(phone_number: str, message: str):
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
     headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
     clean_number = phone_number.split('@')[0]
-    payload = { "number": clean_number, "options": {"delay": 1200}, "textMessage": {"text": message} }
+    
+    # O formato correto, como você já tinha, usa a chave "text" no nível principal
+    payload = {
+        "number": clean_number,
+        "options": {"delay": 1200},
+        "text": message 
+    }
+
     print("\n=== PAYLOAD ENVIADO AO EVOLUTION ===")
-    print("URL:", url); print("HEADERS:", headers); print("PAYLOAD:", json.dumps(payload, indent=2))
+    print("URL:", url)
+    print("HEADERS:", headers)
+    print("PAYLOAD:", json.dumps(payload, indent=2))
+
     try:
         response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
-        print("STATUS CODE:", response.status_code); print("RESPOSTA:", response.text)
+        print("STATUS CODE:", response.status_code)
+        print("RESPOSTA:", response.text)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro ao enviar mensagem via WhatsApp: {e.response.text if e.response else e}")
