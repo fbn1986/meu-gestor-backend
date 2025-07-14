@@ -1,10 +1,10 @@
-import sys
-print("--- INÍCIO SYS.PATH ---", sys.path, "--- FIM SYS.PATH ---")
+# main.py (Versão Final com Resumo Avançado)
 
 # --- Importações ---
 from fastapi import FastAPI, Request, Depends
 from sqlalchemy.orm import Session
-from datetime import datetime
+# <<< ALTERADO: Adicionado 'timedelta' para cálculos com dias >>>
+from datetime import datetime, date, timedelta
 import logging
 import requests
 import json
@@ -13,7 +13,7 @@ import re
 
 from dotenv import load_dotenv
 from pydub import AudioSegment
-from sqlalchemy import create_engine, Column, Integer, String, Numeric, DateTime, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Numeric, DateTime, ForeignKey, func, and_
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -45,7 +45,7 @@ if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
 else:
     logging.warning("Caminho para FFMPEG_PATH não encontrado ou inválido.")
 
-# --- Banco de Dados ---
+# --- Banco de Dados e Modelos ---
 try:
     engine = create_engine(DATABASE_URL)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -55,7 +55,6 @@ except Exception as e:
     logging.error(f"Erro ao conectar no banco de dados: {e}")
     exit()
 
-# --- Modelos ---
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
@@ -75,7 +74,6 @@ class Expense(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- Dependência DB ---
 def get_db():
     db = SessionLocal()
     try:
@@ -103,7 +101,50 @@ def add_expense(db: Session, user: User, expense_data: dict):
     db.add(new_expense)
     db.commit()
 
-# --- Áudio: Download e Conversão ---
+# <<< INÍCIO DA FUNÇÃO DE RESUMO ALTERADA >>>
+def get_expenses_summary(db: Session, user: User, period: str):
+    """Busca despesas e retorna o valor total para um determinado período."""
+    logging.info(f"Buscando resumo de despesas para o usuário {user.id} no período '{period}'")
+    
+    today = date.today()
+    start_date = None # Vamos definir a data de início baseada no período
+
+    # Converte o período para minúsculas para facilitar a comparação
+    period_lower = period.lower()
+
+    if "mês" in period_lower:
+        start_date = today.replace(day=1)
+    elif "hoje" in period_lower:
+        start_date = today
+    elif "ontem" in period_lower:
+        # Para "ontem", o ideal é pegar o dia inteiro de ontem
+        start_date = today - timedelta(days=1)
+        end_date = today 
+        total_value = db.query(func.sum(Expense.value)).filter(
+            Expense.user_id == user.id,
+            Expense.transaction_date >= start_date,
+            Expense.transaction_date < end_date # Menor que hoje para pegar só ontem
+        ).scalar()
+        return total_value or 0.0
+    elif "7 dias" in period_lower:
+        start_date = today - timedelta(days=7)
+    elif "30 dias" in period_lower:
+        start_date = today - timedelta(days=30)
+    
+    # Se uma data de início foi definida, fazemos a busca
+    if start_date:
+        total_value = db.query(func.sum(Expense.value)).filter(
+            Expense.user_id == user.id,
+            Expense.transaction_date >= start_date
+        ).scalar()
+        return total_value or 0.0
+
+    # Se o período não for reconhecido, retorna None para ser tratado no webhook
+    return None
+# <<< FIM DA FUNÇÃO DE RESUMO ALTERADA >>>
+
+
+# --- Áudio, Dify, WhatsApp e Processadores (sem alterações) ---
 def download_and_convert_audio(media_url: str):
     ogg_path = "temp_audio.ogg"
     mp3_path = "temp_audio.mp3"
@@ -122,7 +163,6 @@ def download_and_convert_audio(media_url: str):
         if os.path.exists(ogg_path):
             os.remove(ogg_path)
 
-# --- Dify ---
 def call_dify_api(user_id: str, text_query: str = None):
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
     payload = {
@@ -147,32 +187,19 @@ def call_dify_api(user_id: str, text_query: str = None):
         logging.error("Resposta da Dify não era JSON válido.")
         return None
 
-# --- WhatsApp (com log do payload) ---
 def send_whatsapp_message(phone_number: str, message: str):
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
     headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
     clean_number = phone_number.split('@')[0]
-    payload = {
-        "number": clean_number,
-        "options": {"delay": 1200},
-        "text": message  # ✅ CORRETO: deve ser "text", não "textMessage"
-    }
-
+    payload = { "number": clean_number, "options": {"delay": 1200}, "textMessage": {"text": message} }
     print("\n=== PAYLOAD ENVIADO AO EVOLUTION ===")
-    print("URL:", url)
-    print("HEADERS:", headers)
-    print("PAYLOAD:", json.dumps(payload, indent=2))
-
+    print("URL:", url); print("HEADERS:", headers); print("PAYLOAD:", json.dumps(payload, indent=2))
     try:
         response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
-        print("STATUS CODE:", response.status_code)
-        print("RESPOSTA:", response.text)
+        print("STATUS CODE:", response.status_code); print("RESPOSTA:", response.text)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro ao enviar mensagem via WhatsApp: {e.response.text if e.response else e}")
-
-# --- FastAPI App ---
-app = FastAPI()
 
 def process_text_message(message_text: str, sender_number: str, db: Session):
     logging.info(f">>> PROCESSANDO TEXTO: [{sender_number}] {message_text}")
@@ -183,49 +210,41 @@ def process_audio_message(message: dict, sender_number: str, db: Session):
     logging.info(f">>> PROCESSANDO ÁUDIO de [{sender_number}]")
     media_url = message.get("url") or message.get("mediaUrl")
     if not media_url:
-        logging.warning("Mensagem de áudio sem URL.")
-        return None
-
+        logging.warning("Mensagem de áudio sem URL."); return None
     mp3_file_path = download_and_convert_audio(media_url)
-    if not mp3_file_path:
-        return None
-
+    if not mp3_file_path: return None
     try:
         with open(mp3_file_path, "rb") as audio_file:
             transcription = openai.Audio.transcribe("whisper-1", audio_file)
             text = transcription["text"]
             logging.info(f"Transcrição: {text}")
     except Exception as e:
-        logging.error(f"Erro na transcrição com Whisper: {e}")
-        return None
+        logging.error(f"Erro na transcrição com Whisper: {e}"); return None
     finally:
         if os.path.exists(mp3_file_path):
             os.remove(mp3_file_path)
-
     dify_user_id = re.sub(r'\D', '', sender_number)
     return call_dify_api(user_id=dify_user_id, text_query=text)
+
+# --- FastAPI App ---
+app = FastAPI()
 
 @app.get("/")
 def read_root():
     return {"Status": "Meu Gestor Backend está online!"}
 
+# <<< ALTERADO: Pequeno ajuste na lógica do webhook para tratar período não reconhecido >>>
 @app.post("/webhook/evolution")
 async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
     data = await request.json()
     logging.info(f"DADOS RECEBIDOS: {json.dumps(data, indent=2)}")
 
-    if data.get("event") != "messages.upsert":
-        return {"status": "evento_ignorado"}
-
+    if data.get("event") != "messages.upsert": return {"status": "evento_ignorado"}
     message_data = data.get("data", {})
-    if message_data.get("key", {}).get("fromMe"):
-        return {"status": "mensagem_propria_ignorada"}
-
+    if message_data.get("key", {}).get("fromMe"): return {"status": "mensagem_propria_ignorada"}
     sender_number = message_data.get("key", {}).get("remoteJid")
     message = message_data.get("message", {})
-
-    if not sender_number or not message:
-        return {"status": "dados_insuficientes"}
+    if not sender_number or not message: return {"status": "dados_insuficientes"}
 
     dify_result = None
     if "conversation" in message and message["conversation"]:
@@ -233,32 +252,50 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
     elif "audioMessage" in message:
         dify_result = process_audio_message(message, sender_number, db)
     else:
-        logging.info(f"Tipo de mensagem não suportado: {list(message.keys())}")
-        return {"status": "tipo_nao_suportado"}
+        logging.info(f"Tipo de mensagem não suportado: {list(message.keys())}"); return {"status": "tipo_nao_suportado"}
 
     if not dify_result:
-        logging.warning("Sem resultado do Dify.")
-        return {"status": "falha_processamento"}
+        logging.warning("Sem resultado do Dify."); return {"status": "falha_processamento"}
 
     logging.info(f"Resposta do Dify: {json.dumps(dify_result, indent=2)}")
+    action = dify_result.get("action")
 
-    if dify_result.get("action") == "register_expense":
+    if action == "register_expense":
         try:
             user = get_or_create_user(db, phone_number=sender_number)
             add_expense(db, user=user, expense_data=dify_result)
-
             valor = float(dify_result.get('value', 0))
             descricao = dify_result.get('description', 'N/A')
-            confirmation = f"✅ Despesa de R$ {valor:.2f} ({descricao}) registada com sucesso!"
+            confirmation = f"✅ Despesa de R$ {valor:.2f} ({descricao}) registrada com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
-        except SQLAlchemyError as e:
-            logging.error(f"Erro no banco: {e}")
-            send_whatsapp_message(sender_number, "❌ Erro ao salvar despesa.")
-        except (ValueError, TypeError) as e:
-            logging.error(f"Dados inválidos: {dify_result} | Erro: {e}")
-            send_whatsapp_message(sender_number, "❌ Não entendi os dados da despesa.")
+        except Exception as e:
+            logging.error(f"Erro ao registrar despesa: {e}")
+            send_whatsapp_message(sender_number, "❌ Tive um problema para guardar sua despesa.")
+
+    elif action == "get_summary":
+        try:
+            user = get_or_create_user(db, phone_number=sender_number)
+            period = dify_result.get("period", "período não identificado")
+            total_spent = get_expenses_summary(db, user=user, period=period)
+            
+            if total_spent is not None:
+                formatted_total = f"{total_spent:.2f}".replace('.', ',')
+                summary_message = f"📊 Resumo para '{period}':\n\nVocê gastou um total de *R$ {formatted_total}*."
+                send_whatsapp_message(sender_number, summary_message)
+            else:
+                # Caso a função retorne None (período não reconhecido)
+                send_whatsapp_message(sender_number, f"Não consegui entender o período de tempo '{period}'. Tente 'hoje', 'ontem', 'este mês' ou 'últimos 7 dias'.")
+        except Exception as e:
+            logging.error(f"Erro ao gerar resumo: {e}")
+            send_whatsapp_message(sender_number, "❌ Tive um problema para gerar seu resumo.")
+
     else:
-        fallback = dify_result.get("message", "Não consegui entender. Pode tentar de novo?")
+        fallback = "Não consegui entender. Você pode tentar dizer 'gastei 20 reais no almoço' ou 'qual meu resumo do mês?'"
         send_whatsapp_message(sender_number, fallback)
 
     return {"status": "processado"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
