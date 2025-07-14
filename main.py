@@ -61,8 +61,9 @@ class User(Base):
     phone_number = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     expenses = relationship("Expense", back_populates="user")
-    # <<< NOVO: Relacionamento com a tabela de rendas >>>
     incomes = relationship("Income", back_populates="user")
+    # <<< NOVO: Relacionamento com a tabela de lembretes >>>
+    reminders = relationship("Reminder", back_populates="user")
 
 class Expense(Base):
     """Modelo da tabela de despesas."""
@@ -75,7 +76,6 @@ class Expense(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="expenses")
 
-# <<< INÍCIO DO NOVO MODELO DE RENDA >>>
 class Income(Base):
     """Modelo da tabela de rendas/créditos."""
     __tablename__ = "incomes"
@@ -85,10 +85,21 @@ class Income(Base):
     transaction_date = Column(DateTime, default=datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="incomes")
-# <<< FIM DO NOVO MODELO DE RENDA >>>
 
+# <<< INÍCIO DO NOVO MODELO DE LEMBRETE >>>
+class Reminder(Base):
+    """Modelo da tabela de lembretes."""
+    __tablename__ = "reminders"
+    id = Column(Integer, primary_key=True, index=True)
+    description = Column(String, nullable=False)
+    due_date = Column(DateTime, nullable=False)
+    is_sent = Column(String, default='false') # Para sabermos se a notificação já foi enviada
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="reminders")
+# <<< FIM DO NOVO MODELO DE LEMBRETE >>>
 
-Base.metadata.create_all(bind=engine) # Isso criará a nova tabela 'incomes' automaticamente
+# Cria as tabelas no banco de dados, se não existirem
+Base.metadata.create_all(bind=engine)
 
 def get_db():
     db = SessionLocal()
@@ -108,19 +119,23 @@ def add_expense(db: Session, user: User, expense_data: dict):
     new_expense = Expense(description=expense_data.get("description"), value=expense_data.get("value"), category=expense_data.get("category"), user_id=user.id)
     db.add(new_expense); db.commit()
 
-# <<< INÍCIO DA NOVA FUNÇÃO DE ADICIONAR RENDA >>>
 def add_income(db: Session, user: User, income_data: dict):
-    """Adiciona uma nova renda para um usuário no banco de dados."""
-    logging.info(f"Adicionando renda para o usuário {user.id}...")
-    new_income = Income(
-        description=income_data.get("description"),
-        value=income_data.get("value"),
+    new_income = Income(description=income_data.get("description"), value=income_data.get("value"), user_id=user.id)
+    db.add(new_income); db.commit()
+
+# <<< INÍCIO DA NOVA FUNÇÃO DE ADICIONAR LEMBRETE >>>
+def add_reminder(db: Session, user: User, reminder_data: dict):
+    """Adiciona um novo lembrete para um usuário no banco de dados."""
+    logging.info(f"Adicionando lembrete para o usuário {user.id}...")
+    new_reminder = Reminder(
+        description=reminder_data.get("description"),
+        due_date=reminder_data.get("due_date"), # Dify já nos dá a data formatada
         user_id=user.id
     )
-    db.add(new_income)
+    db.add(new_reminder)
     db.commit()
-    logging.info("Renda salva com sucesso!")
-# <<< FIM DA NOVA FUNÇÃO DE ADICIONAR RENDA >>>
+    logging.info("Lembrete salvo com sucesso!")
+# <<< FIM DA NOVA FUNÇÃO DE ADICIONAR LEMBRETE >>>
 
 def get_expenses_summary(db: Session, user: User, period: str) -> Tuple[List[Expense], float] | None:
     # (A função de resumo continua a mesma)
@@ -234,7 +249,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
     sender_number = user.phone_number
     
     try:
-        # <<< INÍCIO DO BLOCO LÓGICO ALTERADO >>>
         if action == "register_expense":
             add_expense(db, user=user, expense_data=dify_result)
             valor = float(dify_result.get('value', 0))
@@ -248,6 +262,23 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             descricao = dify_result.get('description', 'N/A')
             confirmation = f"💰 Crédito de R$ {valor:.2f} ({descricao}) registrado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
+
+        # <<< INÍCIO DA NOVA LÓGICA DE LEMBRETE >>>
+        elif action == "create_reminder":
+            add_reminder(db, user=user, reminder_data=dify_result)
+            descricao = dify_result.get('description', 'N/A')
+            due_date_str = dify_result.get('due_date')
+            
+            # Formata a data para uma leitura mais amigável
+            try:
+                due_date_obj = datetime.fromisoformat(due_date_str)
+                data_formatada = due_date_obj.strftime('%d/%m/%Y às %H:%M')
+                confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
+            except (ValueError, TypeError):
+                confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
+            
+            send_whatsapp_message(sender_number, confirmation)
+        # <<< FIM DA NOVA LÓGICA DE LEMBRETE >>>
 
         elif action == "get_summary":
             period = dify_result.get("period", "período não identificado")
@@ -287,9 +318,8 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para editar.")
 
         else: # "not_understood" ou qualquer outra ação
-            fallback = "Não entendi. Tente de novo, por favor. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário'."
+            fallback = "Não entendi. Tente de novo, por favor. Ex: 'gastei 50 no mercado', 'lembrete pagar conta amanhã'."
             send_whatsapp_message(sender_number, fallback)
-        # <<< FIM DO BLOCO LÓGICO ALTERADO >>>
 
     except Exception as e:
         logging.error(f"Erro ao manusear a ação '{action}': {e}")
@@ -298,7 +328,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 # ==============================================================================
 # ||                          APLICAÇÃO FASTAPI (ROTAS)                         ||
 # ==============================================================================
-# (A aplicação FastAPI e o webhook continuam os mesmos)
 app = FastAPI()
 
 @app.get("/")
