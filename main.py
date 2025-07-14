@@ -117,41 +117,42 @@ def download_and_convert_audio(media_url: str):
     finally:
         if os.path.exists(ogg_path): os.remove(ogg_path)
 
+# <<< VERSÃO CORRIGIDA E MAIS ROBUSTA >>>
 def call_dify_api(user_id: str, text_query: str = None):
+    """Envia a mensagem para o Dify e lida com respostas que não são JSON."""
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
-    payload = {"inputs": {"query": text_query} if text_query else {}, "query": text_query or "Analisar despesa", "user": user_id, "response_mode": "blocking"}
+    payload = {
+        "inputs": {"query": text_query} if text_query else {},
+        "query": text_query or "Analisar despesa",
+        "user": user_id,
+        "response_mode": "blocking"
+    }
+    
     try:
-        response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=120); response.raise_for_status()
-        return json.loads(response.json().get("answer", "{}"))
-    except Exception as e: logging.error(f"Erro na chamada ao Dify: {e}"); return None
+        logging.info(f"Payload enviado ao Dify:\n{json.dumps(payload, indent=2)}")
+        response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=120)
+        response.raise_for_status()
+        
+        response_data = response.json()
+        answer_str = response_data.get("answer", "") # Pega a resposta, ou uma string vazia se não houver
 
-def send_whatsapp_message(phone_number: str, message: str):
-    url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
-    headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
-    clean_number = phone_number.split('@')[0]
-    payload = { "number": clean_number, "options": {"delay": 1200}, "text": message }
-    try:
-        requests.post(url, headers=headers, data=json.dumps(payload), timeout=30).raise_for_status()
-    except Exception as e: logging.error(f"Erro ao enviar mensagem via WhatsApp: {e}")
+        # Tenta decodificar a resposta como JSON
+        try:
+            parsed_json = json.loads(answer_str)
+            return parsed_json
+        except json.JSONDecodeError:
+            # Se falhar (resposta era texto puro ou vazia), nós mesmos criamos a resposta padrão
+            logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'. Tratando como 'not_understood'.")
+            return {"action": "not_understood"}
 
-def process_text_message(message_text: str, sender_number: str, db: Session):
-    dify_user_id = re.sub(r'\D', '', sender_number)
-    return call_dify_api(user_id=dify_user_id, text_query=message_text)
-
-def process_audio_message(message: dict, sender_number: str, db: Session):
-    media_url = message.get("url") or message.get("mediaUrl")
-    if not media_url: return None
-    mp3_file_path = download_and_convert_audio(media_url)
-    if not mp3_file_path: return None
-    try:
-        with open(mp3_file_path, "rb") as audio_file:
-            transcription = openai.Audio.transcribe("whisper-1", audio_file)
-        text = transcription["text"]
-    except Exception as e: logging.error(f"Erro na transcrição: {e}"); return None
-    finally:
-        if os.path.exists(mp3_file_path): os.remove(mp3_file_path)
-    dify_user_id = re.sub(r'\D', '', sender_number)
-    return call_dify_api(user_id=dify_user_id, text_query=text)
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Erro na chamada ao Dify: {e}")
+        if e.response:
+            logging.error(f"Resposta da API: {e.response.text}")
+        return None # Retorna None em caso de falha de conexão
+    except Exception as e:
+        logging.error(f"Um erro inesperado ocorreu na função call_dify_api: {e}")
+        return None
 
 # --- FastAPI App ---
 app = FastAPI()
