@@ -170,30 +170,30 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
     db.add(new_reminder)
     db.commit()
 
-def get_expenses_summary(db: Session, user: User, period: str) -> Tuple[List[Expense], float] | None:
-    """Busca a lista de despesas e o valor total para um determinado período."""
-    logging.info(f"Buscando resumo de despesas para o usuário {user.id} no período '{period}'")
+def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float] | None:
+    """Busca a lista de despesas e o valor total para um período e categoria opcionais."""
+    logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
     today = date.today()
     start_date = None
     period_lower = period.lower()
 
-    if "mês" in period_lower:
-        start_date = today.replace(day=1)
-    elif "hoje" in period_lower:
-        start_date = today
+    if "mês" in period_lower: start_date = today.replace(day=1)
+    elif "hoje" in period_lower: start_date = today
     elif "ontem" in period_lower:
         start_date = today - timedelta(days=1)
         end_date = today
-        expenses = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date, Expense.transaction_date < end_date).order_by(Expense.transaction_date.asc()).all()
+        query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date, Expense.transaction_date < end_date)
+        if category: query = query.filter(Expense.category == category)
+        expenses = query.order_by(Expense.transaction_date.asc()).all()
         total_value = sum(expense.value for expense in expenses)
         return expenses, total_value
-    elif "7 dias" in period_lower:
-        start_date = today - timedelta(days=7)
-    elif "30 dias" in period_lower:
-        start_date = today - timedelta(days=30)
+    elif "7 dias" in period_lower: start_date = today - timedelta(days=7)
+    elif "30 dias" in period_lower: start_date = today - timedelta(days=30)
     
     if start_date:
-        expenses = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date).order_by(Expense.transaction_date.asc()).all()
+        query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date)
+        if category: query = query.filter(Expense.category == category)
+        expenses = query.order_by(Expense.transaction_date.asc()).all()
         total_value = sum(expense.value for expense in expenses)
         return expenses, total_value
     
@@ -206,20 +206,16 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     start_date = None
     period_lower = period.lower()
 
-    if "mês" in period_lower:
-        start_date = today.replace(day=1)
-    elif "hoje" in period_lower:
-        start_date = today
+    if "mês" in period_lower: start_date = today.replace(day=1)
+    elif "hoje" in period_lower: start_date = today
     elif "ontem" in period_lower:
         start_date = today - timedelta(days=1)
         end_date = today
         incomes = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date, Income.transaction_date < end_date).order_by(Income.transaction_date.asc()).all()
         total_value = sum(income.value for income in incomes)
         return incomes, total_value
-    elif "7 dias" in period_lower:
-        start_date = today - timedelta(days=7)
-    elif "30 dias" in period_lower:
-        start_date = today - timedelta(days=30)
+    elif "7 dias" in period_lower: start_date = today - timedelta(days=7)
+    elif "30 dias" in period_lower: start_date = today - timedelta(days=30)
     
     if start_date:
         incomes = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date).order_by(Income.transaction_date.asc()).all()
@@ -376,7 +372,11 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
         elif action == "get_summary":
             period = dify_result.get("period", "período não identificado")
-            expense_data = get_expenses_summary(db, user=user, period=period)
+            category = dify_result.get("category") # Pode ser None
+            
+            expense_data = get_expenses_summary(db, user=user, period=period, category=category)
+            
+            # O resumo de créditos não filtra por categoria de despesa
             income_data = get_incomes_summary(db, user=user, period=period)
 
             if expense_data is None or income_data is None:
@@ -393,20 +393,25 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             f_balance = f"{balance:.2f}".replace('.', ',')
 
             # Constrói a mensagem
+            category_filter_text = f" de '{category}'" if category else ""
             summary_message = f"📊 *Balanço para '{period}'*:\n\n"
-            summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
-            if incomes:
-                for income in incomes[:3]: # Mostra até 3 últimos créditos
-                    summary_message += f"  - {income.description}\n"
             
-            summary_message += f"\n💸 *Total de Despesas: R$ {f_total_expenses}*\n"
+            if not category: # Só mostra o balanço completo se não houver filtro de categoria
+                summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
+                if incomes:
+                    for income in incomes[:3]:
+                        summary_message += f"  - {income.description}\n"
+                summary_message += "\n"
+
+            summary_message += f"💸 *Total de Despesas{category_filter_text}: R$ {f_total_expenses}*\n"
             if expenses:
-                for expense in expenses[:5]: # Mostra até 5 últimas despesas
-                    summary_message += f"  - {expense.description}\n"
+                for expense in expenses[:5]:
+                    summary_message += f"  - {expense.description} (R$ {expense.value:.2f})\n"
             
-            summary_message += f"\n--------------------\n"
-            balance_emoji = "📈" if balance >= 0 else "📉"
-            summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*"
+            if not category: # Só mostra o balanço final se não houver filtro
+                summary_message += f"\n--------------------\n"
+                balance_emoji = "📈" if balance >= 0 else "📉"
+                summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*"
             
             send_whatsapp_message(sender_number, summary_message)
         
@@ -431,7 +436,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para editar.")
 
         else: # "not_understood" ou qualquer outra ação
-            fallback = "Não entendi. Tente de novo, por favor. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário', 'resumo do mês'."
+            fallback = "Não entendi. Tente de novo. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário', 'resumo do mês'."
             send_whatsapp_message(sender_number, fallback)
 
     except Exception as e:
@@ -488,5 +493,3 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
 
 # Permite rodar o servidor com `python main.py` para desenvolvimento local
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
