@@ -9,7 +9,7 @@ import json
 import os
 import re
 from datetime import datetime, date, timedelta
-from typing import List, Tuple # <<< NOVO: Para anotação de tipos
+from typing import List, Tuple
 
 # Terceiros
 import requests
@@ -27,7 +27,6 @@ from sqlalchemy.exc import SQLAlchemyError
 # ==============================================================================
 # ||                      CONFIGURAÇÃO E INICIALIZAÇÃO                        ||
 # ==============================================================================
-
 # (Toda a seção de configuração inicial continua a mesma)
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -55,15 +54,18 @@ except Exception as e:
 # ||                      MODELOS DO BANCO DE DADOS (SQLALCHEMY)              ||
 # ==============================================================================
 
-# (As classes User e Expense continuam as mesmas)
 class User(Base):
+    """Modelo da tabela de usuários."""
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     phone_number = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     expenses = relationship("Expense", back_populates="user")
+    # <<< NOVO: Relacionamento com a tabela de rendas >>>
+    incomes = relationship("Income", back_populates="user")
 
 class Expense(Base):
+    """Modelo da tabela de despesas."""
     __tablename__ = "expenses"
     id = Column(Integer, primary_key=True, index=True)
     description = Column(String, nullable=False)
@@ -73,7 +75,20 @@ class Expense(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="expenses")
 
-Base.metadata.create_all(bind=engine)
+# <<< INÍCIO DO NOVO MODELO DE RENDA >>>
+class Income(Base):
+    """Modelo da tabela de rendas/créditos."""
+    __tablename__ = "incomes"
+    id = Column(Integer, primary_key=True, index=True)
+    description = Column(String, nullable=False)
+    value = Column(Numeric(10, 2), nullable=False)
+    transaction_date = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="incomes")
+# <<< FIM DO NOVO MODELO DE RENDA >>>
+
+
+Base.metadata.create_all(bind=engine) # Isso criará a nova tabela 'incomes' automaticamente
 
 def get_db():
     db = SessionLocal()
@@ -84,8 +99,6 @@ def get_db():
 # ==============================================================================
 # ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
 # ==============================================================================
-
-# (get_or_create_user, add_expense, delete_last_expense, edit_last_expense_value continuam iguais)
 def get_or_create_user(db: Session, phone_number: str) -> User:
     user = db.query(User).filter(User.phone_number == phone_number).first()
     if not user: user = User(phone_number=phone_number); db.add(user); db.commit(); db.refresh(user)
@@ -95,7 +108,39 @@ def add_expense(db: Session, user: User, expense_data: dict):
     new_expense = Expense(description=expense_data.get("description"), value=expense_data.get("value"), category=expense_data.get("category"), user_id=user.id)
     db.add(new_expense); db.commit()
 
+# <<< INÍCIO DA NOVA FUNÇÃO DE ADICIONAR RENDA >>>
+def add_income(db: Session, user: User, income_data: dict):
+    """Adiciona uma nova renda para um usuário no banco de dados."""
+    logging.info(f"Adicionando renda para o usuário {user.id}...")
+    new_income = Income(
+        description=income_data.get("description"),
+        value=income_data.get("value"),
+        user_id=user.id
+    )
+    db.add(new_income)
+    db.commit()
+    logging.info("Renda salva com sucesso!")
+# <<< FIM DA NOVA FUNÇÃO DE ADICIONAR RENDA >>>
+
+def get_expenses_summary(db: Session, user: User, period: str) -> Tuple[List[Expense], float] | None:
+    # (A função de resumo continua a mesma)
+    logging.info(f"Buscando resumo detalhado de despesas para o usuário {user.id} no período '{period}'")
+    today = date.today(); start_date = None; period_lower = period.lower()
+    if "mês" in period_lower: start_date = today.replace(day=1)
+    elif "hoje" in period_lower: start_date = today
+    elif "ontem" in period_lower:
+        start_date = today - timedelta(days=1); end_date = today
+        expenses = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date, Expense.transaction_date < end_date).order_by(Expense.transaction_date.asc()).all()
+        total_value = sum(expense.value for expense in expenses); return expenses, total_value
+    elif "7 dias" in period_lower: start_date = today - timedelta(days=7)
+    elif "30 dias" in period_lower: start_date = today - timedelta(days=30)
+    if start_date:
+        expenses = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date).order_by(Expense.transaction_date.asc()).all()
+        total_value = sum(expense.value for expense in expenses); return expenses, total_value
+    return None
+
 def delete_last_expense(db: Session, user: User) -> dict | None:
+    # (A função de apagar continua a mesma)
     last_expense = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.id.desc()).first()
     if last_expense:
         deleted_details = {"description": last_expense.description, "value": float(last_expense.value)}
@@ -104,54 +149,16 @@ def delete_last_expense(db: Session, user: User) -> dict | None:
     return None
 
 def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expense | None:
+    # (A função de editar continua a mesma)
     last_expense = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.id.desc()).first()
     if last_expense:
         last_expense.value = new_value; db.commit(); db.refresh(last_expense)
         return last_expense
     return None
 
-# <<< INÍCIO DA FUNÇÃO DE RESUMO ALTERADA >>>
-def get_expenses_summary(db: Session, user: User, period: str) -> Tuple[List[Expense], float] | None:
-    """
-    Busca a lista de despesas e o valor total para um determinado período.
-    Retorna uma tupla (lista_de_despesas, total) ou None se o período não for reconhecido.
-    """
-    logging.info(f"Buscando resumo detalhado de despesas para o usuário {user.id} no período '{period}'")
-    today = date.today()
-    start_date = None
-    period_lower = period.lower()
-
-    if "mês" in period_lower: start_date = today.replace(day=1)
-    elif "hoje" in period_lower: start_date = today
-    elif "ontem" in period_lower:
-        start_date = today - timedelta(days=1)
-        end_date = today
-        expenses = db.query(Expense).filter(
-            Expense.user_id == user.id,
-            Expense.transaction_date >= start_date,
-            Expense.transaction_date < end_date
-        ).order_by(Expense.transaction_date.asc()).all()
-        total_value = sum(expense.value for expense in expenses)
-        return expenses, total_value
-    elif "7 dias" in period_lower: start_date = today - timedelta(days=7)
-    elif "30 dias" in period_lower: start_date = today - timedelta(days=30)
-    
-    if start_date:
-        expenses = db.query(Expense).filter(
-            Expense.user_id == user.id,
-            Expense.transaction_date >= start_date
-        ).order_by(Expense.transaction_date.asc()).all()
-        total_value = sum(expense.value for expense in expenses)
-        return expenses, total_value
-    
-    return None # Período não reconhecido
-# <<< FIM DA FUNÇÃO DE RESUMO ALTERADA >>>
-
-
 # ==============================================================================
 # ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS               ||
 # ==============================================================================
-
 # (As funções de comunicação com APIs externas continuam as mesmas)
 def transcribe_audio(file_path: str) -> str | None:
     logging.info(f"Enviando áudio '{file_path}' para transcrição...")
@@ -161,9 +168,7 @@ def transcribe_audio(file_path: str) -> str | None:
         text = transcription["text"]
         logging.info(f"Transcrição bem-sucedida: '{text}'")
         return text
-    except Exception as e:
-        logging.error(f"Erro na transcrição com Whisper: {e}")
-        return None
+    except Exception as e: logging.error(f"Erro na transcrição com Whisper: {e}"); return None
 
 def call_dify_api(user_id: str, text_query: str) -> dict | None:
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
@@ -189,14 +194,11 @@ def send_whatsapp_message(phone_number: str, message: str):
     try:
         logging.info(f"Enviando mensagem para {clean_number}: '{message}'")
         requests.post(url, headers=headers, json=payload, timeout=30).raise_for_status()
-    except Exception as e:
-        logging.error(f"Erro ao enviar mensagem via WhatsApp: {e}")
-
+    except Exception as e: logging.error(f"Erro ao enviar mensagem via WhatsApp: {e}")
 
 # ==============================================================================
 # ||                         LÓGICA DE PROCESSAMENTO                          ||
 # ==============================================================================
-
 # (As funções process_text_message e process_audio_message continuam as mesmas)
 def process_text_message(message_text: str, sender_number: str) -> dict | None:
     logging.info(f">>> PROCESSANDO TEXTO: [{sender_number}]")
@@ -225,13 +227,14 @@ def process_audio_message(message: dict, sender_number: str) -> dict | None:
         if os.path.exists(ogg_path): os.remove(ogg_path)
         if os.path.exists(mp3_file_path): os.remove(mp3_file_path)
 
-# <<< INÍCIO DA FUNÇÃO DE LÓGICA ALTERADA >>>
+
 def handle_dify_action(dify_result: dict, user: User, db: Session):
     """Executa a lógica apropriada baseada na ação retornada pelo Dify."""
     action = dify_result.get("action")
     sender_number = user.phone_number
     
     try:
+        # <<< INÍCIO DO BLOCO LÓGICO ALTERADO >>>
         if action == "register_expense":
             add_expense(db, user=user, expense_data=dify_result)
             valor = float(dify_result.get('value', 0))
@@ -239,27 +242,29 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             confirmation = f"✅ Despesa de R$ {valor:.2f} ({descricao}) registrada com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
 
+        elif action == "register_income":
+            add_income(db, user=user, income_data=dify_result)
+            valor = float(dify_result.get('value', 0))
+            descricao = dify_result.get('description', 'N/A')
+            confirmation = f"💰 Crédito de R$ {valor:.2f} ({descricao}) registrado com sucesso!"
+            send_whatsapp_message(sender_number, confirmation)
+
         elif action == "get_summary":
             period = dify_result.get("period", "período não identificado")
             summary_data = get_expenses_summary(db, user=user, period=period)
-            
             if summary_data:
                 expenses, total_spent = summary_data
-                
-                # Constrói a mensagem detalhada
-                summary_message = f"📊 *Resumo para '{period}'*:\n\n"
+                summary_message = f"📊 *Resumo de despesas para '{period}'*:\n\n"
                 if expenses:
                     for expense in expenses:
-                        # Formata a data para o padrão brasileiro
                         data_formatada = expense.transaction_date.strftime('%d/%m')
                         summary_message += f"*- {data_formatada}:* R$ {expense.value:.2f} - {expense.description}\n"
                     summary_message += f"\n*Total Gasto: R$ {total_spent:.2f}*"
                 else:
                     summary_message += "Nenhuma despesa encontrada neste período."
-                
                 send_whatsapp_message(sender_number, summary_message)
             else:
-                send_whatsapp_message(sender_number, f"Não consegui entender o período de tempo '{period}'. Tente 'hoje', 'ontem', ou 'este mês'.")
+                send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}'. Tente 'hoje', 'ontem', ou 'este mês'.")
 
         elif action == "delete_last_expense":
             deleted_expense = delete_last_expense(db, user=user)
@@ -282,19 +287,18 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para editar.")
 
         else: # "not_understood" ou qualquer outra ação
-            fallback = "Não entendi. Tente de novo, por favor. Ex: 'gastei 50 no mercado', 'resumo do mês', 'apagar último gasto'."
+            fallback = "Não entendi. Tente de novo, por favor. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário'."
             send_whatsapp_message(sender_number, fallback)
+        # <<< FIM DO BLOCO LÓGICO ALTERADO >>>
 
     except Exception as e:
         logging.error(f"Erro ao manusear a ação '{action}': {e}")
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
-# <<< FIM DA FUNÇÃO DE LÓGICA ALTERADA >>>
-
 
 # ==============================================================================
 # ||                          APLICAÇÃO FASTAPI (ROTAS)                         ||
 # ==============================================================================
-
+# (A aplicação FastAPI e o webhook continuam os mesmos)
 app = FastAPI()
 
 @app.get("/")
@@ -302,7 +306,6 @@ def read_root(): return {"Status": "Meu Gestor Backend está online!"}
 
 @app.post("/webhook/evolution")
 async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
-    """Rota principal que recebe os webhooks da Evolution API."""
     data = await request.json()
     logging.info(f"DADOS RECEBIDOS: {json.dumps(data, indent=2)}")
 
