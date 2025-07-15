@@ -270,17 +270,18 @@ def call_dify_api(user_id: str, text_query: str) -> dict | None:
     """Envia uma consulta para o agente Dify e lida com respostas que não são JSON."""
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
     
-    # Payload para o endpoint de 'completion', que é stateless.
+    # --- CORREÇÃO CRÍTICA ---
+    # O payload foi restaurado para incluir a query dentro de 'inputs',
+    # que é o formato esperado pela API do Dify, mesmo no modo 'completion'.
+    # Este foi o erro que causava a falha de interpretação.
     payload = {
-        "inputs": {}, # Pode ser usado para passar variáveis para o prompt, se houver.
+        "inputs": {"query": text_query},
         "query": text_query,
         "user": user_id,
         "response_mode": "blocking" 
     }
     
-    # --- ALTERAÇÃO PRINCIPAL ---
-    # Alterado de /chat-messages para /completion-messages para garantir uma interação stateless.
-    # Isso evita que o histórico de conversas interfira na análise da mensagem atual.
+    # Usamos o endpoint de 'completion' para garantir uma interação stateless (sem memória).
     api_endpoint = f"{DIFY_API_URL}/completion-messages"
     
     try:
@@ -288,14 +289,11 @@ def call_dify_api(user_id: str, text_query: str) -> dict | None:
         response = requests.post(api_endpoint, headers=headers, json=payload, timeout=120)
         response.raise_for_status()
         
-        # A resposta de 'completion' está diretamente no campo 'answer'.
         answer_str = response.json().get("answer", "")
         
         try:
-            # Tenta carregar a resposta como JSON.
             return json.loads(answer_str)
         except json.JSONDecodeError:
-            # Se falhar, significa que a IA não retornou um JSON válido.
             logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'. Tratando como 'not_understood'.")
             return {"action": "not_understood"}
             
@@ -386,10 +384,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
         
-        # --- NOVO: Adicionada ação para o link do dashboard ---
         elif action == "get_dashboard_link":
-            # Você precisa definir a URL base do seu dashboard.
-            # O número de telefone é usado para construir o link específico do usuário.
             dashboard_base_url = "https://SEU_DASHBOARD_URL.com" # <-- SUBSTITUA PELA URL REAL
             user_phone = user.phone_number.split('@')[0]
             dashboard_link = f"{dashboard_base_url}/dashboard/{user_phone}"
@@ -601,7 +596,6 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
 
     if not dify_result:
         logging.warning("Sem resultado do Dify. Abortando.")
-        # Adicionado para não deixar o usuário sem resposta em caso de falha total do Dify
         send_whatsapp_message(sender_number, "Desculpe, estou com dificuldade para processar sua solicitação. Tente novamente em alguns instantes.")
         return {"status": "falha_dify"}
 
