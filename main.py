@@ -390,7 +390,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         elif action == "get_dashboard_link":
             # Você precisa definir a URL base do seu dashboard.
             # O número de telefone é usado para construir o link específico do usuário.
-            dashboard_base_url = "https://meu-gestor-dashboard.onrender.com" # <-- SUBSTITUA PELA URL REAL
+            dashboard_base_url = "https://SEU_DASHBOARD_URL.com" # <-- SUBSTITUA PELA URL REAL
             user_phone = user.phone_number.split('@')[0]
             dashboard_link = f"{dashboard_base_url}/dashboard/{user_phone}"
             message = f"Olá! Acesse seu painel de controle pessoal aqui: {dashboard_link}"
