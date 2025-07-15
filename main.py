@@ -472,10 +472,14 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         cleaned_number = f"55{cleaned_number}"
 
     phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
+    
+    # <<< NOVO: Adicionado log para debugging >>>
+    logging.info(f"Buscando no banco de dados por: {phone_number_jid}")
 
     user = db.query(User).filter(User.phone_number == phone_number_jid).first()
     
     if not user:
+        logging.warning(f"Usuário não encontrado para o JID: {phone_number_jid}")
         return {"error": "Usuário não encontrado"}
         
     expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
