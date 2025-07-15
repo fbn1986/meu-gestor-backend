@@ -280,7 +280,7 @@ def call_dify_api(user_id: str, text_query: str) -> dict | None:
     try:
         logging.info(f"Payload enviado ao Dify:\n{json.dumps(payload, indent=2)}")
         # O endpoint correto para chat-messages é geralmente /v1/chat-messages
-        response = requests.post(f"{DIFY_API_URL}/v1/chat-messages", headers=headers, json=payload, timeout=120)
+        response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=120)
         response.raise_for_status()
         
         # A resposta da Dify pode vir como um stream de dados. Precisamos processá-la.
