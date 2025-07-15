@@ -46,7 +46,7 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")
-DASHBOARD_URL = os.getenv("DASHBOARD_URL") # Adicionado para a função de link
+DASHBOARD_URL = os.getenv("DASHBOARD_URL")
 
 # --- Inicialização de APIs e Serviços ---
 openai.api_key = OPENAI_API_KEY
@@ -267,6 +267,7 @@ def transcribe_audio(file_path: str) -> str | None:
         logging.error(f"Erro na transcrição com Whisper: {e}")
         return None
 
+# CORRIGIDO: Função restaurada para a versão original do seu backup
 def call_dify_api(user_id: str, text_query: str) -> dict | None:
     """Envia uma consulta para o agente Dify e lida com respostas que não são JSON."""
     headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
@@ -274,42 +275,23 @@ def call_dify_api(user_id: str, text_query: str) -> dict | None:
         "inputs": {},
         "query": text_query,
         "user": user_id,
-        "response_mode": "blocking",
-        "conversation_id": ""
+        "response_mode": "blocking"
     }
     try:
         logging.info(f"Payload enviado ao Dify:\n{json.dumps(payload, indent=2)}")
         response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=120)
         response.raise_for_status()
-        
-        full_answer = ""
-        for line in response.text.strip().split('\n'):
-            if line.startswith('data:'):
-                try:
-                    data_str = line[len('data: '):]
-                    if data_str:
-                        json_data = json.loads(data_str)
-                        if json_data.get('event') == 'agent_message_end':
-                            full_answer = json_data.get('answer', '')
-                            break
-                except json.JSONDecodeError:
-                    logging.warning(f"Linha de dados inválida do Dify: {line}")
-                    continue
-        
-        if not full_answer:
-             logging.warning("Não foi possível extrair uma resposta final do Dify.")
-             return {"action": "not_understood"}
-
+        answer_str = response.json().get("answer", "")
         try:
-            return json.loads(full_answer)
+            return json.loads(answer_str)
         except json.JSONDecodeError:
-            logging.warning(f"Dify retornou texto puro em vez de JSON: '{full_answer}'. Tratando como 'not_understood'.")
+            logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'. Tratando como 'not_understood'.")
             return {"action": "not_understood"}
-
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro na chamada à API do Dify: {e.response.text if e.response else e}")
         return None
 
+# CORRIGIDO: Função restaurada para a versão original do seu backup
 def send_whatsapp_message(phone_number: str, message: str):
     """Envia uma mensagem de texto via Evolution API."""
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
@@ -402,9 +384,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
 
-        # =====================================================================
-        # ||              >>> LÓGICA DE RESUMO ATUALIZADA <<<                ||
-        # =====================================================================
         elif action == "get_summary":
             period = dify_result.get("period", "período não identificado")
             category = dify_result.get("category")
@@ -419,7 +398,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             
             f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
 
-            # --- Lógica para Resumo Geral (sem filtro de categoria) ---
             if not category:
                 income_data = get_incomes_summary(db, user=user, period=period)
                 incomes, total_incomes = income_data if income_data else ([], 0)
@@ -455,7 +433,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 balance_emoji = "📈" if balance >= 0 else "📉"
                 summary_message += f"{balance_emoji} *Saldo Final: R$ {f_balance}*"
 
-            # --- Lógica para Resumo com Filtro de Categoria (comportamento antigo mantido) ---
             else:
                 summary_message = f"📊 *Resumo para '{period}' na categoria '{category}'*:\n\n"
                 summary_message += f"💸 *Total de Despesas: R$ {f_total_expenses}*\n"
