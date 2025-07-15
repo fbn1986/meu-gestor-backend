@@ -1,7 +1,7 @@
 # ==============================================================================
 # ||                   MEU GESTOR - BACKEND PRINCIPAL (com API)           ||
 # ==============================================================================
-# Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
+# Este arquivoo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
 
 # --- Importações de Bibliotecas ---
