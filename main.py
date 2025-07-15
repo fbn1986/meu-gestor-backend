@@ -11,7 +11,7 @@ import os
 import re
 from datetime import datetime, date, timedelta
 from typing import List, Tuple
-from collections import defaultdict # <<< ALTERAÇÃO: Importação adicionada
+from collections import defaultdict
 
 # Terceiros
 import requests
@@ -269,23 +269,46 @@ def transcribe_audio(file_path: str) -> str | None:
 
 def call_dify_api(user_id: str, text_query: str) -> dict | None:
     """Envia uma consulta para o agente Dify e lida com respostas que não são JSON."""
-    headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "inputs": {"query": text_query},
+        "inputs": {},
         "query": text_query,
         "user": user_id,
-        "response_mode": "blocking"
+        "response_mode": "blocking",
+        "conversation_id": ""
     }
     try:
         logging.info(f"Payload enviado ao Dify:\n{json.dumps(payload, indent=2)}")
-        response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=120)
+        # O endpoint correto para chat-messages é geralmente /v1/chat-messages
+        response = requests.post(f"{DIFY_API_URL}/v1/chat-messages", headers=headers, json=payload, timeout=120)
         response.raise_for_status()
-        answer_str = response.json().get("answer", "")
+        
+        # A resposta da Dify pode vir como um stream de dados. Precisamos processá-la.
+        full_answer = ""
+        for line in response.text.strip().split('\n'):
+            if line.startswith('data:'):
+                try:
+                    data_str = line[len('data: '):]
+                    if data_str:
+                        json_data = json.loads(data_str)
+                        if json_data.get('event') == 'agent_message_end':
+                            full_answer = json_data.get('answer', '')
+                            break
+                except json.JSONDecodeError:
+                    logging.warning(f"Linha de dados inválida do Dify: {line}")
+                    continue
+        
+        if not full_answer:
+             logging.warning("Não foi possível extrair uma resposta final do Dify.")
+             return {"action": "not_understood"}
+
         try:
-            return json.loads(answer_str)
+            # Tenta decodificar a resposta final como JSON
+            return json.loads(full_answer)
         except json.JSONDecodeError:
-            logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'. Tratando como 'not_understood'.")
+            logging.warning(f"Dify retornou texto puro em vez de JSON: '{full_answer}'. Tratando como 'not_understood'.")
             return {"action": "not_understood"}
+
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro na chamada à API do Dify: {e.response.text if e.response else e}")
         return None
@@ -342,13 +365,11 @@ def process_audio_message(message: dict, sender_number: str) -> dict | None:
         if os.path.exists(ogg_path): os.remove(ogg_path)
         if os.path.exists(mp3_file_path): os.remove(mp3_file_path)
 
-# <<< FUNÇÃO COMPLETAMENTE SUBSTITUÍDA >>>
 def handle_dify_action(dify_result: dict, user: User, db: Session):
     """Executa a lógica apropriada baseada na ação retornada pelo Dify."""
     action = dify_result.get("action")
     sender_number = user.phone_number
     
-    # Dicionário de emojis para dar um toque especial às categorias
     category_emojis = {
         "Alimentação": "🍔", "Transporte": "🚗", "Moradia": "🏠",
         "Lazer": "🎉", "Saúde": "💊", "Compras": "🛍️",
@@ -511,7 +532,6 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     
     cleaned_number = re.sub(r'\D', '', phone_number)
     
-    # Garante que o número tenha o código do país (Brasil)
     if not cleaned_number.startswith('55'):
         cleaned_number = f"55{cleaned_number}"
 
@@ -546,6 +566,7 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
 
     if data.get("event") != "messages.upsert":
         return {"status": "evento_ignorado"}
+    
     message_data = data.get("data", {})
     if not isinstance(message_data, dict) or message_data.get("key", {}).get("fromMe"):
         return {"status": "mensagem_propria_ou_invalida_ignorada"}
