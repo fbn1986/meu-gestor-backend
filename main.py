@@ -1,5 +1,5 @@
 # ==============================================================================
-# ||                      MEU GESTOR - BACKEND PRINCIPAL (com API)                    ||
+# ||                      MEU GESTOR - BACKEND PRINCIPAL (com API)            ||
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
@@ -28,7 +28,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                           CONFIGURAÇÃO E INICIALIZAÇÃO                           ||
+# ||                      CONFIGURAÇÃO E INICIALIZAÇÃO                        ||
 # ==============================================================================
 
 # Carrega variáveis de ambiente do arquivo .env
@@ -46,7 +46,6 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")
-DASHBOARD_URL = os.getenv("DASHBOARD_URL")
 
 # --- Inicialização de APIs e Serviços ---
 openai.api_key = OPENAI_API_KEY
@@ -68,7 +67,7 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||                        MODELOS DO BANCO DE DADOS (SQLALCHEMY)                      ||
+# ||                      MODELOS DO BANCO DE DADOS (SQLALCHEMY)              ||
 # ==============================================================================
 
 class User(Base):
@@ -125,7 +124,7 @@ def get_db():
 
 
 # ==============================================================================
-# ||                        FUNÇÕES DE LÓGICA DE BANCO DE DADOS                       ||
+# ||                      FUNÇÕES DE LÓGICA DE BANCO DE DADOS                 ||
 # ==============================================================================
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
@@ -251,7 +250,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                     FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                     ||
+# ||                      FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS            ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -267,7 +266,6 @@ def transcribe_audio(file_path: str) -> str | None:
         logging.error(f"Erro na transcrição com Whisper: {e}")
         return None
 
-# CORRIGIDO: Função restaurada para a versão original do seu backup
 def call_dify_api(user_id: str, text_query: str) -> dict | None:
     """Envia uma consulta para o agente Dify e lida com respostas que não são JSON."""
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
@@ -291,7 +289,6 @@ def call_dify_api(user_id: str, text_query: str) -> dict | None:
         logging.error(f"Erro na chamada à API do Dify: {e.response.text if e.response else e}")
         return None
 
-# CORRIGIDO: Função restaurada para a versão original do seu backup
 def send_whatsapp_message(phone_number: str, message: str):
     """Envia uma mensagem de texto via Evolution API."""
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
@@ -306,7 +303,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                           LÓGICA DE PROCESSAMENTO                          ||
+# ||                      LÓGICA DE PROCESSAMENTO                             ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str) -> dict | None:
@@ -327,8 +324,7 @@ def process_audio_message(message: dict, sender_number: str) -> dict | None:
     ogg_path = f"temp_audio_{sender_number}.ogg"
     
     try:
-        headers = {"apikey": EVOLUTION_API_KEY}
-        response = requests.get(media_url, headers=headers, timeout=30)
+        response = requests.get(media_url, timeout=30)
         response.raise_for_status()
         with open(ogg_path, "wb") as f:
             f.write(response.content)
@@ -349,13 +345,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
     action = dify_result.get("action")
     sender_number = user.phone_number
     
-    category_emojis = {
-        "Alimentação": "🍔", "Transporte": "🚗", "Moradia": "🏠",
-        "Lazer": "🎉", "Saúde": "💊", "Compras": "🛍️",
-        "Educação": "📚", "Serviços": "⚙️", "Outros": "📎",
-        "Sem Categoria": "🤷"
-    }
-
     try:
         if action == "register_expense":
             add_expense(db, user=user, expense_data=dify_result)
@@ -385,64 +374,110 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
         elif action == "get_summary":
             period = dify_result.get("period", "período não identificado")
-            category = dify_result.get("category")
+            category_filter = dify_result.get("category")
             
-            expense_data = get_expenses_summary(db, user=user, period=period, category=category)
-            
-            if expense_data is None:
+            # --- NOVA LÓGICA ---
+            # Pega o nível de detalhe. Se não vier do Dify, usa "simple" como padrão
+            # para garantir que o comportamento antigo continue funcionando.
+            detail_level = dify_result.get("detail_level", "simple")
+
+            expense_data = get_expenses_summary(db, user=user, period=period, category=category_filter)
+            income_data = get_incomes_summary(db, user=user, period=period)
+
+            if expense_data is None or income_data is None:
                 send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}'. Tente 'hoje', 'ontem', ou 'este mês'.")
                 return
 
             expenses, total_expenses = expense_data
-            
-            f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
+            incomes, total_incomes = income_data
+            balance = total_incomes - total_expenses
 
-            if not category:
-                income_data = get_incomes_summary(db, user=user, period=period)
-                incomes, total_incomes = income_data if income_data else ([], 0)
-                balance = total_incomes - total_expenses
+            # --- NOVO: Lógica para Resumo por Categoria ---
+            if detail_level == "by_category":
+                summary_message = f"📊 *Resumo por Categoria para '{period}'*\n\n"
+                
+                if not expenses:
+                    summary_message += "Nenhuma despesa encontrada neste período."
+                    send_whatsapp_message(sender_number, summary_message)
+                    return
 
+                # Agrupa despesas por categoria
+                expenses_by_category = defaultdict(list)
+                for exp in expenses:
+                    cat = exp.category if exp.category else "Outros"
+                    expenses_by_category[cat].append(exp)
+                
+                summary_message += f"💸 *Gasto Total: R$ {total_expenses:.2f}*\n"
+                summary_message += "--------------------\n\n"
+
+                # Monta a string para cada categoria
+                for category, items in expenses_by_category.items():
+                    category_total = sum(item.value for item in items)
+                    summary_message += f"*{category}* - Total: R$ {category_total:.2f}\n"
+                    for item in items:
+                        summary_message += f"  - {item.description} (R$ {item.value:.2f})\n"
+                    summary_message += "\n"
+                
+                send_whatsapp_message(sender_number, summary_message)
+
+            # --- NOVO: Lógica para Resumo Detalhado Completo ---
+            elif detail_level == "full":
+                summary_message = f"📊 *Extrato Detalhado para '{period}'*\n\n"
+                
+                # Seção de Créditos
+                summary_message += f"💰 *Créditos: R$ {total_incomes:.2f}*\n"
+                if incomes:
+                    for income in incomes:
+                        dt = income.transaction_date.strftime('%d/%m')
+                        summary_message += f"  - {dt}: {income.description} (R$ {income.value:.2f})\n"
+                else:
+                    summary_message += "  - Nenhuma entrada de crédito.\n"
+                
+                summary_message += "\n"
+
+                # Seção de Despesas
+                summary_message += f"💸 *Despesas: R$ {total_expenses:.2f}*\n"
+                if expenses:
+                    for expense in expenses:
+                        dt = expense.transaction_date.strftime('%d/%m')
+                        summary_message += f"  - {dt}: {expense.description} (R$ {expense.value:.2f})\n"
+                else:
+                    summary_message += "  - Nenhuma despesa.\n"
+
+                summary_message += "\n--------------------\n"
+                balance_emoji = "📈" if balance >= 0 else "📉"
+                summary_message += f"{balance_emoji} *Balanço Final: R$ {balance:.2f}*"
+                
+                send_whatsapp_message(sender_number, summary_message)
+
+            # --- LÓGICA ORIGINAL (Resumo Simples) ---
+            # Este bloco é executado se detail_level for "simple" ou não for fornecido.
+            else:
                 f_total_incomes = f"{total_incomes:.2f}".replace('.', ',')
+                f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
                 f_balance = f"{balance:.2f}".replace('.', ',')
 
-                summary_message = f"📊 *Resumo para '{period}'*\n\n"
-                summary_message += f"💰 *Total de Receitas:* R$ {f_total_incomes}\n"
-                summary_message += f"💸 *Total de Despesas:* R$ {f_total_expenses}\n\n"
-                summary_message += "--------------------\n\n"
-                summary_message += "*Gastos por Categoria:*\n"
-
-                if expenses:
-                    expenses_by_category = defaultdict(lambda: {'total': 0.0, 'items': []})
-                    for expense in expenses:
-                        cat = expense.category if expense.category else "Sem Categoria"
-                        expenses_by_category[cat]['total'] += float(expense.value)
-                        expenses_by_category[cat]['items'].append(expense)
-
-                    for cat, data in expenses_by_category.items():
-                        emoji = category_emojis.get(cat, "▪️")
-                        total_cat_f = f"{data['total']:.2f}".replace('.', ',')
-                        summary_message += f"\n*{emoji} {cat} - R$ {total_cat_f}*\n"
-                        for item in data['items']:
-                            valor_item_f = f"{item.value:.2f}".replace('.', ',')
-                            summary_message += f"  - {item.description} (R$ {valor_item_f})\n"
-                else:
-                    summary_message += "_Nenhuma despesa registrada no período._\n"
+                category_filter_text = f" de '{category_filter}'" if category_filter else ""
+                summary_message = f"📊 *Balanço para '{period}'*:\n\n"
                 
-                summary_message += f"\n--------------------\n"
-                balance_emoji = "📈" if balance >= 0 else "📉"
-                summary_message += f"{balance_emoji} *Saldo Final: R$ {f_balance}*"
+                if not category_filter:
+                    summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
+                    if incomes:
+                        for income in incomes[:3]:
+                            summary_message += f"  - {income.description}\n"
+                    summary_message += "\n"
 
-            else:
-                summary_message = f"📊 *Resumo para '{period}' na categoria '{category}'*:\n\n"
-                summary_message += f"💸 *Total de Despesas: R$ {f_total_expenses}*\n"
+                summary_message += f"💸 *Total de Despesas{category_filter_text}: R$ {f_total_expenses}*\n"
                 if expenses:
-                    for expense in expenses:
-                        valor_item_f = f"{expense.value:.2f}".replace('.', ',')
-                        summary_message += f"  - {expense.description} (R$ {valor_item_f})\n"
-                else:
-                    summary_message += "_Nenhuma despesa registrada para esta categoria no período._"
-            
-            send_whatsapp_message(sender_number, summary_message)
+                    for expense in expenses[:5]:
+                        summary_message += f"  - {expense.description} (R$ {expense.value:.2f})\n"
+                
+                if not category_filter:
+                    summary_message += f"\n--------------------\n"
+                    balance_emoji = "📈" if balance >= 0 else "📉"
+                    summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*"
+                
+                send_whatsapp_message(sender_number, summary_message)
         
         elif action == "delete_last_expense":
             deleted_expense = delete_last_expense(db, user=user)
@@ -464,28 +499,17 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             else:
                 send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para editar.")
 
-        elif action == "get_dashboard_link":
-            if DASHBOARD_URL:
-                message = f"Olá! Aqui está o link para o seu painel financeiro:\n\n{DASHBOARD_URL}"
-                send_whatsapp_message(sender_number, message)
-            else:
-                logging.error("A variável DASHBOARD_URL não está configurada no ambiente.")
-                send_whatsapp_message(sender_number, "Desculpe, o link do dashboard não está configurado no momento.")
-
         else: # "not_understood" ou qualquer outra ação
             fallback = "Não entendi. Tente de novo. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário', 'resumo do mês'."
             send_whatsapp_message(sender_number, fallback)
 
-    except SQLAlchemyError as e:
-        logging.error(f"Erro de banco de dados ao manusear a ação '{action}': {e}")
-        send_whatsapp_message(sender_number, "❌ Ocorreu um erro ao acessar seus dados. Por favor, tente novamente.")
     except Exception as e:
-        logging.error(f"Erro geral ao manusear a ação '{action}': {e}", exc_info=True)
+        logging.error(f"Erro ao manusear a ação '{action}': {e}", exc_info=True)
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
 
 # ==============================================================================
-# ||                        APLICAÇÃO FASTAPI (ROTAS)                               ||
+# ||                      APLICAÇÃO FASTAPI (ROTAS)                           ||
 # ==============================================================================
 
 app = FastAPI()
@@ -545,10 +569,9 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
 
     if data.get("event") != "messages.upsert":
         return {"status": "evento_ignorado"}
-    
     message_data = data.get("data", {})
-    if not isinstance(message_data, dict) or message_data.get("key", {}).get("fromMe"):
-        return {"status": "mensagem_propria_ou_invalida_ignorada"}
+    if message_data.get("key", {}).get("fromMe"):
+        return {"status": "mensagem_propria_ignorada"}
     
     sender_number = message_data.get("key", {}).get("remoteJid")
     message = message_data.get("message", {})
