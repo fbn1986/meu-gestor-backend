@@ -3,7 +3,6 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp,
 # incluindo registro de despesas/créditos, resumos, edição e remoção.
-# Testando o deploy da nova máquina
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -494,3 +493,5 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
 
 # Permite rodar o servidor com `python main.py` para desenvolvimento local
 if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
