@@ -1,7 +1,7 @@
 # ==============================================================================
 # ||                   MEU GESTOR - BACKEND PRINCIPAL (com API)           ||
 # ==============================================================================
-# Este arquivoo contém toda a lógica para o assistente financeiro do WhatsApp
+# Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
 
 # --- Importações de Bibliotecas ---
@@ -466,10 +466,12 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     """Busca todos os dados financeiros para um determinado número de telefone."""
     logging.info(f"Recebida requisição de dados para o número: {phone_number}")
     
-    if not phone_number.endswith('@s.whatsapp.net'):
-        phone_number_jid = f"{phone_number}@s.whatsapp.net"
-    else:
-        phone_number_jid = phone_number
+    cleaned_number = re.sub(r'\D', '', phone_number)
+    
+    if not cleaned_number.startswith('55'):
+        cleaned_number = f"55{cleaned_number}"
+
+    phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
 
     user = db.query(User).filter(User.phone_number == phone_number_jid).first()
     
