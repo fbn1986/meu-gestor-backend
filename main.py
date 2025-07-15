@@ -3,6 +3,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp,
 # incluindo registro de despesas/créditos, resumos, edição e remoção.
+# Testando o deploy da nova máquina
 
 # --- Importações de Bibliotecas ---
 import logging
