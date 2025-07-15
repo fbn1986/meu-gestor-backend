@@ -269,22 +269,36 @@ def transcribe_audio(file_path: str) -> str | None:
 def call_dify_api(user_id: str, text_query: str) -> dict | None:
     """Envia uma consulta para o agente Dify e lida com respostas que não são JSON."""
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
+    
+    # Payload para o endpoint de 'completion', que é stateless.
     payload = {
-        "inputs": {"query": text_query},
+        "inputs": {}, # Pode ser usado para passar variáveis para o prompt, se houver.
         "query": text_query,
         "user": user_id,
-        "response_mode": "blocking"
+        "response_mode": "blocking" 
     }
+    
+    # --- ALTERAÇÃO PRINCIPAL ---
+    # Alterado de /chat-messages para /completion-messages para garantir uma interação stateless.
+    # Isso evita que o histórico de conversas interfira na análise da mensagem atual.
+    api_endpoint = f"{DIFY_API_URL}/completion-messages"
+    
     try:
-        logging.info(f"Payload enviado ao Dify:\n{json.dumps(payload, indent=2)}")
-        response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=120)
+        logging.info(f"Payload enviado ao Dify ({api_endpoint}):\n{json.dumps(payload, indent=2)}")
+        response = requests.post(api_endpoint, headers=headers, json=payload, timeout=120)
         response.raise_for_status()
+        
+        # A resposta de 'completion' está diretamente no campo 'answer'.
         answer_str = response.json().get("answer", "")
+        
         try:
+            # Tenta carregar a resposta como JSON.
             return json.loads(answer_str)
         except json.JSONDecodeError:
+            # Se falhar, significa que a IA não retornou um JSON válido.
             logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'. Tratando como 'not_understood'.")
             return {"action": "not_understood"}
+            
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro na chamada à API do Dify: {e.response.text if e.response else e}")
         return None
@@ -371,14 +385,20 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             except (ValueError, TypeError):
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
+        
+        # --- NOVO: Adicionada ação para o link do dashboard ---
+        elif action == "get_dashboard_link":
+            # Você precisa definir a URL base do seu dashboard.
+            # O número de telefone é usado para construir o link específico do usuário.
+            dashboard_base_url = "https://meu-gestor-dashboard.onrender.com" # <-- SUBSTITUA PELA URL REAL
+            user_phone = user.phone_number.split('@')[0]
+            dashboard_link = f"{dashboard_base_url}/dashboard/{user_phone}"
+            message = f"Olá! Acesse seu painel de controle pessoal aqui: {dashboard_link}"
+            send_whatsapp_message(sender_number, message)
 
         elif action == "get_summary":
             period = dify_result.get("period", "período não identificado")
             category_filter = dify_result.get("category")
-            
-            # --- NOVA LÓGICA ---
-            # Pega o nível de detalhe. Se não vier do Dify, usa "simple" como padrão
-            # para garantir que o comportamento antigo continue funcionando.
             detail_level = dify_result.get("detail_level", "simple")
 
             expense_data = get_expenses_summary(db, user=user, period=period, category=category_filter)
@@ -392,7 +412,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             incomes, total_incomes = income_data
             balance = total_incomes - total_expenses
 
-            # --- NOVO: Lógica para Resumo por Categoria ---
             if detail_level == "by_category":
                 summary_message = f"📊 *Resumo por Categoria para '{period}'*\n\n"
                 
@@ -401,7 +420,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                     send_whatsapp_message(sender_number, summary_message)
                     return
 
-                # Agrupa despesas por categoria
                 expenses_by_category = defaultdict(list)
                 for exp in expenses:
                     cat = exp.category if exp.category else "Outros"
@@ -410,7 +428,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 summary_message += f"💸 *Gasto Total: R$ {total_expenses:.2f}*\n"
                 summary_message += "--------------------\n\n"
 
-                # Monta a string para cada categoria
                 for category, items in expenses_by_category.items():
                     category_total = sum(item.value for item in items)
                     summary_message += f"*{category}* - Total: R$ {category_total:.2f}\n"
@@ -420,11 +437,9 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 
                 send_whatsapp_message(sender_number, summary_message)
 
-            # --- NOVO: Lógica para Resumo Detalhado Completo ---
             elif detail_level == "full":
                 summary_message = f"📊 *Extrato Detalhado para '{period}'*\n\n"
                 
-                # Seção de Créditos
                 summary_message += f"💰 *Créditos: R$ {total_incomes:.2f}*\n"
                 if incomes:
                     for income in incomes:
@@ -435,7 +450,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 
                 summary_message += "\n"
 
-                # Seção de Despesas
                 summary_message += f"💸 *Despesas: R$ {total_expenses:.2f}*\n"
                 if expenses:
                     for expense in expenses:
@@ -450,8 +464,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 
                 send_whatsapp_message(sender_number, summary_message)
 
-            # --- LÓGICA ORIGINAL (Resumo Simples) ---
-            # Este bloco é executado se detail_level for "simple" ou não for fornecido.
             else:
                 f_total_incomes = f"{total_incomes:.2f}".replace('.', ',')
                 f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
@@ -589,6 +601,8 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
 
     if not dify_result:
         logging.warning("Sem resultado do Dify. Abortando.")
+        # Adicionado para não deixar o usuário sem resposta em caso de falha total do Dify
+        send_whatsapp_message(sender_number, "Desculpe, estou com dificuldade para processar sua solicitação. Tente novamente em alguns instantes.")
         return {"status": "falha_dify"}
 
     user = get_or_create_user(db, phone_number=sender_number)
