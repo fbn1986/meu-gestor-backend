@@ -11,7 +11,7 @@ import os
 import re
 from datetime import datetime, date, timedelta
 from typing import List, Tuple
-from collections import defaultdict # <<< INSERIDO: Importação para agrupar categorias
+from collections import defaultdict
 
 # Terceiros
 import requests
@@ -270,9 +270,9 @@ def transcribe_audio(file_path: str) -> str | None:
 # CORRIGIDO: Função restaurada para a versão original do seu backup
 def call_dify_api(user_id: str, text_query: str) -> dict | None:
     """Envia uma consulta para o agente Dify e lida com respostas que não são JSON."""
-    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
     payload = {
-        "inputs": {},
+        "inputs": {"query": text_query},
         "query": text_query,
         "user": user_id,
         "response_mode": "blocking"
@@ -297,7 +297,7 @@ def send_whatsapp_message(phone_number: str, message: str):
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
     headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
     clean_number = phone_number.split('@')[0]
-    payload = {"number": clean_number, "options": {"delay": 1200}, "textMessage": {"text": message}}
+    payload = {"number": clean_number, "options": {"delay": 1200}, "text": message}
     try:
         logging.info(f"Enviando mensagem para {clean_number}: '{message}'")
         requests.post(url, headers=headers, json=payload, timeout=30).raise_for_status()
@@ -349,7 +349,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
     action = dify_result.get("action")
     sender_number = user.phone_number
     
-    # INSERIDO: Dicionário de emojis para o resumo detalhado
     category_emojis = {
         "Alimentação": "🍔", "Transporte": "🚗", "Moradia": "🏠",
         "Lazer": "🎉", "Saúde": "💊", "Compras": "🛍️",
