@@ -326,7 +326,9 @@ def process_audio_message(message: dict, sender_number: str) -> dict | None:
         response.raise_for_status()
         with open(ogg_path, "wb") as f:
             f.write(response.content)
-        AudioSegment.from_ogg(ogg_path).export(mp3_path, format="mp3")
+        
+        # <<< CORREÇÃO DO ERRO DE DIGITAÇÃO AQUI >>>
+        AudioSegment.from_ogg(ogg_path).export(mp3_file_path, format="mp3")
         
         transcribed_text = transcribe_audio(mp3_file_path)
         if not transcribed_text:
