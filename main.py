@@ -45,6 +45,7 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL") # <<< NOVO: URL do seu dashboard
 
 # --- Inicialização de APIs e Serviços ---
 openai.api_key = OPENAI_API_KEY
@@ -432,6 +433,14 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             else:
                 send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para editar.")
 
+        elif action == "get_dashboard_link":
+            if DASHBOARD_URL:
+                message = f"Olá! Aqui está o link para o seu painel financeiro:\n\n{DASHBOARD_URL}"
+                send_whatsapp_message(sender_number, message)
+            else:
+                logging.error("A variável DASHBOARD_URL não está configurada no ambiente.")
+                send_whatsapp_message(sender_number, "Desculpe, o link do dashboard não está configurado no momento.")
+
         else: # "not_understood" ou qualquer outra ação
             fallback = "Não entendi. Tente de novo. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário', 'resumo do mês'."
             send_whatsapp_message(sender_number, fallback)
@@ -473,7 +482,6 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
 
     phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
     
-    # <<< NOVO: Adicionado log para debugging >>>
     logging.info(f"Buscando no banco de dados por: {phone_number_jid}")
 
     user = db.query(User).filter(User.phone_number == phone_number_jid).first()
