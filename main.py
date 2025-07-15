@@ -1,8 +1,8 @@
 # ==============================================================================
-# ||                   MEU GESTOR - BACKEND PRINCIPAL                     ||
+# ||                   MEU GESTOR - BACKEND PRINCIPAL (com API)           ||
 # ==============================================================================
-# Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp,
-# incluindo registro de despesas/créditos, resumos, edição e remoção.
+# Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
+# e a nova API para servir dados ao dashboard.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -18,6 +18,7 @@ import openai
 from dotenv import load_dotenv
 from pydub import AudioSegment
 from fastapi import FastAPI, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import (create_engine, Column, Integer, String, Numeric,
                         DateTime, ForeignKey, func, and_)
@@ -326,8 +327,6 @@ def process_audio_message(message: dict, sender_number: str) -> dict | None:
         response.raise_for_status()
         with open(ogg_path, "wb") as f:
             f.write(response.content)
-        
-        # <<< CORREÇÃO DO ERRO DE DIGITAÇÃO AQUI >>>
         AudioSegment.from_ogg(ogg_path).export(mp3_file_path, format="mp3")
         
         transcribed_text = transcribe_audio(mp3_file_path)
@@ -374,11 +373,9 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
         elif action == "get_summary":
             period = dify_result.get("period", "período não identificado")
-            category = dify_result.get("category") # Pode ser None
+            category = dify_result.get("category")
             
             expense_data = get_expenses_summary(db, user=user, period=period, category=category)
-            
-            # O resumo de créditos não filtra por categoria de despesa
             income_data = get_incomes_summary(db, user=user, period=period)
 
             if expense_data is None or income_data is None:
@@ -389,16 +386,14 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             incomes, total_incomes = income_data
             balance = total_incomes - total_expenses
 
-            # Formata os totais para o padrão brasileiro
             f_total_incomes = f"{total_incomes:.2f}".replace('.', ',')
             f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
             f_balance = f"{balance:.2f}".replace('.', ',')
 
-            # Constrói a mensagem
             category_filter_text = f" de '{category}'" if category else ""
             summary_message = f"📊 *Balanço para '{period}'*:\n\n"
             
-            if not category: # Só mostra o balanço completo se não houver filtro de categoria
+            if not category:
                 summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
                 if incomes:
                     for income in incomes[:3]:
@@ -410,7 +405,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 for expense in expenses[:5]:
                     summary_message += f"  - {expense.description} (R$ {expense.value:.2f})\n"
             
-            if not category: # Só mostra o balanço final se não houver filtro
+            if not category:
                 summary_message += f"\n--------------------\n"
                 balance_emoji = "📈" if balance >= 0 else "📉"
                 summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*"
@@ -452,10 +447,47 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
 app = FastAPI()
 
+# Configuração do CORS para permitir acesso do dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.get("/")
 def read_root():
     """Rota principal para verificar se o servidor está online."""
     return {"Status": "Meu Gestor Backend está online!"}
+
+@app.get("/api/data/{phone_number}")
+def get_user_data(phone_number: str, db: Session = Depends(get_db)):
+    """Busca todos os dados financeiros para um determinado número de telefone."""
+    logging.info(f"Recebida requisição de dados para o número: {phone_number}")
+    
+    if not phone_number.endswith('@s.whatsapp.net'):
+        phone_number_jid = f"{phone_number}@s.whatsapp.net"
+    else:
+        phone_number_jid = phone_number
+
+    user = db.query(User).filter(User.phone_number == phone_number_jid).first()
+    
+    if not user:
+        return {"error": "Usuário não encontrado"}
+        
+    expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
+    incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
+    
+    expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
+    incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
+    
+    return {
+        "user_id": user.id,
+        "phone_number": user.phone_number,
+        "expenses": expenses_data,
+        "incomes": incomes_data
+    }
 
 @app.post("/webhook/evolution")
 async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
