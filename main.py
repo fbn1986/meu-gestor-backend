@@ -11,6 +11,7 @@ import os
 import re
 from datetime import datetime, date, timedelta
 from typing import List, Tuple, Optional
+from collections import defaultdict
 
 # Terceiros
 import requests
@@ -179,6 +180,93 @@ def add_income(db: Session, user: User, income_data: dict):
     db.add(new_income)
     db.commit()
 
+def add_reminder(db: Session, user: User, reminder_data: dict):
+    """Adiciona um novo lembrete para um usuário no banco de dados."""
+    logging.info(f"Adicionando lembrete para o usuário {user.id}...")
+    new_reminder = Reminder(
+        description=reminder_data.get("description"),
+        due_date=reminder_data.get("due_date"),
+        user_id=user.id
+    )
+    db.add(new_reminder)
+    db.commit()
+
+def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Optional[Tuple[List[Expense], float]]:
+    """Busca a lista de despesas e o valor total para um período e categoria opcionais."""
+    logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
+    today = date.today()
+    start_date = None
+    period_lower = period.lower()
+
+    if "mês" in period_lower or "esse mês" in period_lower: start_date = today.replace(day=1)
+    elif "hoje" in period_lower: start_date = today
+    elif "ontem" in period_lower:
+        start_date = today - timedelta(days=1)
+        end_date = today
+        query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date, Expense.transaction_date < end_date)
+        if category: query = query.filter(Expense.category == category)
+        expenses = query.order_by(Expense.transaction_date.asc()).all()
+        total_value = sum(expense.value for expense in expenses)
+        return expenses, total_value
+    elif "semana" in period_lower or "7 dias" in period_lower: start_date = today - timedelta(days=7)
+    elif "30 dias" in period_lower: start_date = today - timedelta(days=30)
+    
+    if start_date:
+        query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date)
+        if category: query = query.filter(Expense.category == category)
+        expenses = query.order_by(Expense.transaction_date.asc()).all()
+        total_value = sum(expense.value for expense in expenses)
+        return expenses, total_value
+    
+    return None
+
+def get_incomes_summary(db: Session, user: User, period: str) -> Optional[Tuple[List[Income], float]]:
+    """Busca a lista de rendas e o valor total para um determinado período."""
+    logging.info(f"Buscando resumo de créditos para o usuário {user.id} no período '{period}'")
+    today = date.today()
+    start_date = None
+    period_lower = period.lower()
+
+    if "mês" in period_lower or "esse mês" in period_lower: start_date = today.replace(day=1)
+    elif "hoje" in period_lower: start_date = today
+    elif "ontem" in period_lower:
+        start_date = today - timedelta(days=1)
+        end_date = today
+        incomes = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date, Income.transaction_date < end_date).order_by(Income.transaction_date.asc()).all()
+        total_value = sum(income.value for income in incomes)
+        return incomes, total_value
+    elif "semana" in period_lower or "7 dias" in period_lower: start_date = today - timedelta(days=7)
+    elif "30 dias" in period_lower: start_date = today - timedelta(days=30)
+    
+    if start_date:
+        incomes = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date).order_by(Income.transaction_date.asc()).all()
+        total_value = sum(income.value for income in incomes)
+        return incomes, total_value
+    
+    return None
+
+def delete_last_expense(db: Session, user: User) -> dict | None:
+    """Encontra e apaga a última despesa registrada por um usuário."""
+    logging.info(f"Tentando apagar a última despesa do usuário {user.id}")
+    last_expense = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.id.desc()).first()
+    if last_expense:
+        deleted_details = {"description": last_expense.description, "value": float(last_expense.value)}
+        db.delete(last_expense)
+        db.commit()
+        return deleted_details
+    return None
+
+def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expense | None:
+    """Encontra e edita o valor da última despesa registrada por um usuário."""
+    logging.info(f"Tentando editar o valor da última despesa do usuário {user.id} para {new_value}")
+    last_expense = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.id.desc()).first()
+    if last_expense:
+        last_expense.value = new_value
+        db.commit()
+        db.refresh(last_expense)
+        return last_expense
+    return None
+
 # ==============================================================================
 # ||                      FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS            ||
 # ==============================================================================
@@ -186,8 +274,11 @@ def add_income(db: Session, user: User, income_data: dict):
 def call_dify_api(user_id: str, text_query: str) -> dict | None:
     """Envia uma consulta para o agente Dify e lida com respostas que não são JSON."""
     headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
+    
+    # --- CORREÇÃO CRÍTICA ---
+    # Restaurado o payload para o formato que o Dify espera, com a query dentro de 'inputs'.
     payload = {
-        "inputs": {},
+        "inputs": {"query": text_query},
         "query": text_query,
         "user": user_id,
         "response_mode": "blocking"
@@ -247,15 +338,132 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             descricao = dify_result.get('description', 'N/A')
             confirmation = f"💰 Crédito de R$ {valor:.2f} ({descricao}) registrado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
+
+        elif action == "create_reminder":
+            add_reminder(db, user=user, reminder_data=dify_result)
+            descricao = dify_result.get('description', 'N/A')
+            due_date_str = dify_result.get('due_date')
+            try:
+                due_date_obj = datetime.fromisoformat(due_date_str)
+                data_formatada = due_date_obj.strftime('%d/%m/%Y às %H:%M')
+                confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
+            except (ValueError, TypeError):
+                confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
+            send_whatsapp_message(sender_number, confirmation)
+
+        elif action == "get_dashboard_link":
+            if not DASHBOARD_URL:
+                logging.error("A variável de ambiente DASHBOARD_URL não foi configurada no Render.")
+                send_whatsapp_message(sender_number, "Desculpe, a funcionalidade de link para o painel não está configurada corretamente pelo administrador.")
+                return
+            message = f"Olá! Acesse seu painel de controle pessoal aqui: {DASHBOARD_URL}"
+            send_whatsapp_message(sender_number, message)
+
+        elif action == "get_summary":
+            period = dify_result.get("period", "período não identificado")
+            category_filter = dify_result.get("category")
+            detail_level = dify_result.get("detail_level", "simple")
+
+            expense_data = get_expenses_summary(db, user=user, period=period, category=category_filter)
+            income_data = get_incomes_summary(db, user=user, period=period)
+
+            if expense_data is None or income_data is None:
+                send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}'. Tente 'hoje', 'ontem', ou 'este mês'.")
+                return
+
+            expenses, total_expenses = expense_data
+            incomes, total_incomes = income_data
+            balance = total_incomes - total_expenses
+
+            if detail_level == "by_category":
+                summary_message = f"📊 *Resumo por Categoria para '{period}'*\n\n"
+                if not expenses:
+                    summary_message += "Nenhuma despesa encontrada neste período."
+                    send_whatsapp_message(sender_number, summary_message)
+                    return
+                expenses_by_category = defaultdict(list)
+                for exp in expenses:
+                    cat = exp.category if exp.category else "Outros"
+                    expenses_by_category[cat].append(exp)
+                summary_message += f"💸 *Gasto Total: R$ {total_expenses:.2f}*\n--------------------\n\n"
+                for category, items in expenses_by_category.items():
+                    category_total = sum(item.value for item in items)
+                    summary_message += f"*{category}* - Total: R$ {category_total:.2f}\n"
+                    for item in items:
+                        summary_message += f"  - {item.description} (R$ {item.value:.2f})\n"
+                    summary_message += "\n"
+                send_whatsapp_message(sender_number, summary_message)
+
+            elif detail_level == "full":
+                summary_message = f"📊 *Extrato Detalhado para '{period}'*\n\n"
+                summary_message += f"💰 *Créditos: R$ {total_incomes:.2f}*\n"
+                if incomes:
+                    for income in incomes:
+                        dt = income.transaction_date.strftime('%d/%m')
+                        summary_message += f"  - {dt}: {income.description} (R$ {income.value:.2f})\n"
+                else:
+                    summary_message += "  - Nenhuma entrada de crédito.\n"
+                summary_message += "\n"
+                summary_message += f"💸 *Despesas: R$ {total_expenses:.2f}*\n"
+                if expenses:
+                    for expense in expenses:
+                        dt = expense.transaction_date.strftime('%d/%m')
+                        summary_message += f"  - {dt}: {expense.description} (R$ {expense.value:.2f})\n"
+                else:
+                    summary_message += "  - Nenhuma despesa.\n"
+                summary_message += "\n--------------------\n"
+                balance_emoji = "📈" if balance >= 0 else "📉"
+                summary_message += f"{balance_emoji} *Balanço Final: R$ {balance:.2f}*"
+                send_whatsapp_message(sender_number, summary_message)
+
+            else: # Resumo Simples (comportamento original)
+                f_total_incomes = f"{total_incomes:.2f}".replace('.', ',')
+                f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
+                f_balance = f"{balance:.2f}".replace('.', ',')
+                category_filter_text = f" de '{category_filter}'" if category_filter else ""
+                summary_message = f"📊 *Balanço para '{period}'*:\n\n"
+                if not category_filter:
+                    summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
+                    if incomes:
+                        for income in incomes[:3]:
+                            summary_message += f"  - {income.description}\n"
+                    summary_message += "\n"
+                summary_message += f"💸 *Total de Despesas{category_filter_text}: R$ {f_total_expenses}*\n"
+                if expenses:
+                    for expense in expenses[:5]:
+                        summary_message += f"  - {expense.description} (R$ {expense.value:.2f})\n"
+                if not category_filter:
+                    summary_message += f"\n--------------------\n"
+                    balance_emoji = "📈" if balance >= 0 else "📉"
+                    summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*"
+                send_whatsapp_message(sender_number, summary_message)
         
-        # Adicione outras lógicas de ação aqui (get_summary, etc.)
+        elif action == "delete_last_expense":
+            deleted_expense = delete_last_expense(db, user=user)
+            if deleted_expense:
+                valor_f = deleted_expense.get('value', 0)
+                descricao = deleted_expense.get('description', 'N/A')
+                confirmation = f"🗑️ Despesa anterior ('{descricao}' de R$ {valor_f:.2f}) foi removida."
+                send_whatsapp_message(sender_number, confirmation)
+            else:
+                send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para apagar.")
         
+        elif action == "edit_last_expense_value":
+            new_value = float(dify_result.get("new_value", 0))
+            updated_expense = edit_last_expense_value(db, user=user, new_value=new_value)
+            if updated_expense:
+                descricao = updated_expense.description
+                confirmation = f"✏️ Valor da despesa '{descricao}' corrigido para *R$ {updated_expense.value:.2f}*."
+                send_whatsapp_message(sender_number, confirmation)
+            else:
+                send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para editar.")
+
         else: # "not_understood" ou qualquer outra ação
             fallback = "Não entendi. Tente de novo. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário', 'resumo do mês'."
             send_whatsapp_message(sender_number, fallback)
 
     except Exception as e:
-        logging.error(f"Erro ao manusear a ação '{action}': {e}")
+        logging.error(f"Erro ao manusear a ação '{action}': {e}", exc_info=True)
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
 # ==============================================================================
