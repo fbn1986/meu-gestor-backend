@@ -180,15 +180,14 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     brt_offset = timedelta(hours=-3)
     now_brt = datetime.utcnow() + brt_offset
 
-    # --- LÓGICA DE DATAS REESTRUTURADA ---
-    # 1. Define os limites do dia atual em BRT como base
+    # Define os limites do dia atual em BRT como base
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_today_brt = start_of_today_brt + timedelta(days=1)
 
     start_brt, end_brt = None, None
     period_lower = period.lower()
 
-    # 2. Calcula os limites do período solicitado com base no dia atual
+    # Calcula os limites do período solicitado com base no dia atual
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
         end_brt = end_of_today_brt
@@ -205,7 +204,7 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         start_brt = start_of_today_brt - timedelta(days=29)
         end_brt = end_of_today_brt
     
-    # 3. Se um período válido foi identificado, converte para UTC e faz a consulta
+    # Se um período válido foi identificado, converte para UTC e faz a consulta
     if start_brt and end_brt:
         start_date_utc = start_brt - brt_offset
         end_date_utc = end_brt - brt_offset
@@ -218,7 +217,8 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         if category:
             query = query.filter(Expense.category == category)
             
-        expenses = query.order_by(Expense.transaction_date.asc()).all()
+        # ALTERAÇÃO: Ordena por data descendente para pegar os mais recentes primeiro.
+        expenses = query.order_by(Expense.transaction_date.desc()).all()
         total_value = sum(expense.value for expense in expenses)
         return expenses, total_value
     
@@ -231,15 +231,14 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     brt_offset = timedelta(hours=-3)
     now_brt = datetime.utcnow() + brt_offset
 
-    # --- LÓGICA DE DATAS REESTRUTURADA ---
-    # 1. Define os limites do dia atual em BRT como base
+    # Define os limites do dia atual em BRT como base
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_today_brt = start_of_today_brt + timedelta(days=1)
 
     start_brt, end_brt = None, None
     period_lower = period.lower()
 
-    # 2. Calcula os limites do período solicitado com base no dia atual
+    # Calcula os limites do período solicitado com base no dia atual
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
         end_brt = end_of_today_brt
@@ -256,7 +255,7 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
         start_brt = start_of_today_brt - timedelta(days=29)
         end_brt = end_of_today_brt
 
-    # 3. Se um período válido foi identificado, converte para UTC e faz a consulta
+    # Se um período válido foi identificado, converte para UTC e faz a consulta
     if start_brt and end_brt:
         start_date_utc = start_brt - brt_offset
         end_date_utc = end_brt - brt_offset
@@ -267,7 +266,8 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
             Income.transaction_date < end_date_utc
         )
             
-        incomes = query.order_by(Income.transaction_date.asc()).all()
+        # ALTERAÇÃO: Ordena por data descendente para pegar os mais recentes primeiro.
+        incomes = query.order_by(Income.transaction_date.desc()).all()
         total_value = sum(income.value for income in incomes)
         return incomes, total_value
     
@@ -452,6 +452,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             if not category:
                 summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
                 if incomes:
+                    # Mostra os 5 créditos mais recentes
                     for income in incomes[:5]:
                         date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                         summary_message += f"  - ({date_str}) {income.description}\n"
@@ -459,6 +460,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
             summary_message += f"💸 *Total de Despesas{category_filter_text}: R$ {f_total_expenses}*\n"
             if expenses:
+                # Mostra as 5 despesas mais recentes
                 for expense in expenses[:5]:
                     date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                     summary_message += f"  - ({date_str}) {expense.description} (R$ {expense.value:.2f})\n"
