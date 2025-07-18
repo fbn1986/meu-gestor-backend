@@ -446,26 +446,52 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
             f_balance = f"{balance:.2f}".replace('.', ',')
 
-            category_filter_text = f" de '{category}'" if category else ""
             summary_message = f"📊 *Balanço para '{period}'*:\n\n"
             
-            if not category:
+            # Se a consulta for por uma categoria específica, mantém o formato antigo
+            if category:
                 summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
                 if incomes:
-                    # ALTERAÇÃO: Mostra os 15 créditos mais recentes
                     for income in incomes[:15]:
                         date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                         summary_message += f"  - ({date_str}) {income.description}\n"
                 summary_message += "\n"
 
-            summary_message += f"💸 *Total de Despesas{category_filter_text}: R$ {f_total_expenses}*\n"
-            if expenses:
-                # ALTERAÇÃO: Mostra as 15 despesas mais recentes
-                for expense in expenses[:15]:
-                    date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
-                    summary_message += f"  - ({date_str}) {expense.description} (R$ {expense.value:.2f})\n"
+                summary_message += f"💸 *Total de Despesas de '{category}': R$ {f_total_expenses}*\n"
+                if expenses:
+                    for expense in expenses: # Mostra todas as despesas da categoria
+                        date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
+                        summary_message += f"  - ({date_str}) {expense.description} (R$ {expense.value:.2f})\n"
             
-            if not category:
+            # Se for um resumo geral, agrupa por categoria
+            else:
+                summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
+                if incomes:
+                    for income in incomes[:15]:
+                        date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
+                        summary_message += f"  - ({date_str}) {income.description}\n"
+                
+                summary_message += "\n--------------------\n"
+                summary_message += f"💸 *Despesas por Categoria (Total: R$ {f_total_expenses})*\n"
+
+                if expenses:
+                    expenses_by_category = {}
+                    for expense in expenses:
+                        cat = expense.category if expense.category else "Outros"
+                        if cat not in expenses_by_category:
+                            expenses_by_category[cat] = {"items": [], "total": 0}
+                        expenses_by_category[cat]["items"].append(expense)
+                        expenses_by_category[cat]["total"] += expense.value
+
+                    sorted_categories = sorted(expenses_by_category.items(), key=lambda item: item[1]['total'], reverse=True)
+
+                    for cat, data in sorted_categories:
+                        f_cat_total = f"{data['total']:.2f}".replace('.', ',')
+                        summary_message += f"\n*{cat} - Total: R$ {f_cat_total}*\n"
+                        for expense in data["items"]:
+                            f_expense_value = f"{expense.value:.2f}".replace('.', ',')
+                            summary_message += f"  - {expense.description} (R$ {f_expense_value})\n"
+                
                 summary_message += f"\n--------------------\n"
                 balance_emoji = "📈" if balance >= 0 else "📉"
                 summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*"
