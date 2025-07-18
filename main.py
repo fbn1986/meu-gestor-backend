@@ -320,8 +320,8 @@ def transcribe_audio(file_path: str) -> str | None:
         logging.error(f"Erro na transcrição com Whisper: {e}")
         return None
 
-def call_dify_api(user_id: str, text_query: str, image_url: Optional[str] = None) -> dict | None:
-    """Envia uma consulta para o agente Dify, incluindo uma URL de imagem se fornecida."""
+def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) -> dict | None:
+    """Envia uma consulta para o agente Dify, incluindo um file_id se fornecido."""
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
     payload = {
         "inputs": {},
@@ -329,11 +329,11 @@ def call_dify_api(user_id: str, text_query: str, image_url: Optional[str] = None
         "user": user_id,
         "response_mode": "blocking"
     }
-    if image_url:
+    if file_id:
         payload["files"] = [{
             "type": "image",
-            "transfer_method": "remote_url",
-            "url": image_url
+            "transfer_method": "local_file",
+            "upload_file_id": file_id
         }]
 
     try:
@@ -402,7 +402,7 @@ def process_audio_message(message: dict, sender_number: str) -> dict | None:
         if os.path.exists(mp3_file_path): os.remove(mp3_file_path)
 
 def process_image_message(message: dict, sender_number: str) -> dict | None:
-    """Processa uma mensagem de imagem: obtém a URL e a envia para o Dify."""
+    """Processa uma mensagem de imagem: baixa, envia para o Dify files e depois para o chat."""
     logging.info(f">>> PROCESSANDO IMAGEM de [{sender_number}]")
     media_url = message.get("mediaUrl") or message.get("url")
     if not media_url:
@@ -410,9 +410,32 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
         return None
 
     try:
+        # 1. Baixar a imagem
+        response = requests.get(media_url, timeout=30)
+        response.raise_for_status()
+        image_content = response.content
+        
+        # 2. Fazer o upload para o Dify
         dify_user_id = re.sub(r'\D', '', sender_number)
+        upload_url = f"{DIFY_API_URL}/files/upload"
+        headers = {"Authorization": DIFY_API_KEY}
+        files = {'file': ('image.jpeg', image_content, 'image/jpeg')}
+        data = {'user': dify_user_id}
+        
+        logging.info(f"Enviando imagem para Dify upload para o usuário: {dify_user_id}")
+        upload_response = requests.post(upload_url, headers=headers, files=files, data=data, timeout=60)
+        upload_response.raise_for_status()
+        upload_result = upload_response.json()
+        file_id = upload_result.get('id')
+
+        if not file_id:
+            logging.error("Falha ao obter file_id do Dify.")
+            return None
+
+        # 3. Enviar para o chat com a referência do arquivo
         prompt = "Analise este cupom fiscal e registre a despesa."
-        return call_dify_api(user_id=dify_user_id, text_query=prompt, image_url=media_url)
+        return call_dify_api(user_id=dify_user_id, text_query=prompt, file_id=file_id)
+        
     except Exception as e:
         logging.error(f"Erro ao processar imagem: {e}")
         return None
