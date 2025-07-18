@@ -176,45 +176,47 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
 def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float] | None:
     """Busca a lista de despesas e o valor total para um período e categoria opcionais."""
     logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
-    today = date.today()
+    
+    # --- CORREÇÃO DE FUSO HORÁRIO (TIMEZONE) ---
+    # Define o fuso horário do Brasil (BRT = UTC-3)
+    brt_offset = timedelta(hours=-3)
+    now_utc = datetime.utcnow()
+    now_brt = now_utc + brt_offset
+    today_brt = now_brt.date()
+
     start_date = None
+    end_date = None
     period_lower = period.lower()
 
     if "mês" in period_lower:
-        start_date = today.replace(day=1)
+        start_date_brt = today_brt.replace(day=1)
+        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
     
     elif "hoje" in period_lower:
-        start_date = today
-        end_date = today + timedelta(days=1)
-        query = db.query(Expense).filter(
-            Expense.user_id == user.id,
-            Expense.transaction_date >= start_date,
-            Expense.transaction_date < end_date
-        )
-        if category:
-            query = query.filter(Expense.category == category)
-        expenses = query.order_by(Expense.transaction_date.asc()).all()
-        total_value = sum(expense.value for expense in expenses)
-        return expenses, total_value
+        start_date_brt = today_brt
+        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        end_date = start_date + timedelta(days=1)
         
     elif "ontem" in period_lower:
-        start_date = today - timedelta(days=1)
-        end_date = today
-        query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date, Expense.transaction_date < end_date)
-        if category: query = query.filter(Expense.category == category)
-        expenses = query.order_by(Expense.transaction_date.asc()).all()
-        total_value = sum(expense.value for expense in expenses)
-        return expenses, total_value
+        yesterday_brt = today_brt - timedelta(days=1)
+        start_date = datetime.combine(yesterday_brt, datetime.min.time()) - brt_offset
+        end_date = start_date + timedelta(days=1)
         
     elif "7 dias" in period_lower:
-        start_date = today - timedelta(days=7)
+        start_date_brt = today_brt - timedelta(days=6) # Inclui o dia de hoje
+        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
         
     elif "30 dias" in period_lower:
-        start_date = today - timedelta(days=30)
+        start_date_brt = today_brt - timedelta(days=29) # Inclui o dia de hoje
+        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
     
-    if start_date:
+    if start_date is not None:
         query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date)
-        if category: query = query.filter(Expense.category == category)
+        if end_date is not None:
+            query = query.filter(Expense.transaction_date < end_date)
+        if category:
+            query = query.filter(Expense.category == category)
+            
         expenses = query.order_by(Expense.transaction_date.asc()).all()
         total_value = sum(expense.value for expense in expenses)
         return expenses, total_value
@@ -224,40 +226,45 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
 def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Income], float] | None:
     """Busca a lista de rendas e o valor total para um determinado período."""
     logging.info(f"Buscando resumo de créditos para o usuário {user.id} no período '{period}'")
-    today = date.today()
+
+    # --- CORREÇÃO DE FUSO HORÁRIO (TIMEZONE) ---
+    brt_offset = timedelta(hours=-3)
+    now_utc = datetime.utcnow()
+    now_brt = now_utc + brt_offset
+    today_brt = now_brt.date()
+
     start_date = None
+    end_date = None
     period_lower = period.lower()
 
     if "mês" in period_lower:
-        start_date = today.replace(day=1)
-
+        start_date_brt = today_brt.replace(day=1)
+        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+    
     elif "hoje" in period_lower:
-        start_date = today
-        end_date = today + timedelta(days=1)
-        query = db.query(Income).filter(
-            Income.user_id == user.id,
-            Income.transaction_date >= start_date,
-            Income.transaction_date < end_date
-        )
-        incomes = query.order_by(Income.transaction_date.asc()).all()
-        total_value = sum(income.value for income in incomes)
-        return incomes, total_value
-
+        start_date_brt = today_brt
+        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        end_date = start_date + timedelta(days=1)
+        
     elif "ontem" in period_lower:
-        start_date = today - timedelta(days=1)
-        end_date = today
-        incomes = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date, Income.transaction_date < end_date).order_by(Income.transaction_date.asc()).all()
-        total_value = sum(income.value for income in incomes)
-        return incomes, total_value
+        yesterday_brt = today_brt - timedelta(days=1)
+        start_date = datetime.combine(yesterday_brt, datetime.min.time()) - brt_offset
+        end_date = start_date + timedelta(days=1)
         
     elif "7 dias" in period_lower:
-        start_date = today - timedelta(days=7)
+        start_date_brt = today_brt - timedelta(days=6)
+        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
         
     elif "30 dias" in period_lower:
-        start_date = today - timedelta(days=30)
-    
-    if start_date:
-        incomes = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date).order_by(Income.transaction_date.asc()).all()
+        start_date_brt = today_brt - timedelta(days=29)
+        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+
+    if start_date is not None:
+        query = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date)
+        if end_date is not None:
+            query = query.filter(Income.transaction_date < end_date)
+            
+        incomes = query.order_by(Income.transaction_date.asc()).all()
         total_value = sum(income.value for income in incomes)
         return incomes, total_value
     
