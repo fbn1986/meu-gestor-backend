@@ -570,7 +570,9 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*\n\n"
             
             if DASHBOARD_URL:
-                summary_message += f"Se precisar de mais detalhes ou visualizar os gráficos dos seus gastos, você pode acessar a plataforma web em {DASHBOARD_URL} 😉"
+                token = create_auth_token(db, user)
+                login_url = f"{DASHBOARD_URL}?token={token}"
+                summary_message += f"Se precisar de mais detalhes ou visualizar os gráficos dos seus gastos, você pode acessar a plataforma web em {login_url} 😉"
             
             send_whatsapp_message(sender_number, summary_message)
         
