@@ -45,7 +45,6 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")
-# --- NOVO: Lendo a variável de ambiente para a URL do Dashboard ---
 DASHBOARD_URL = os.getenv("DASHBOARD_URL")
 
 
@@ -184,7 +183,6 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     if "mês" in period_lower:
         start_date = today.replace(day=1)
     
-    # --- CORREÇÃO DO BUG DE DATA ---
     elif "hoje" in period_lower:
         start_date = today
         end_date = today + timedelta(days=1)
@@ -233,7 +231,6 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     if "mês" in period_lower:
         start_date = today.replace(day=1)
 
-    # --- CORREÇÃO DO BUG DE DATA ---
     elif "hoje" in period_lower:
         start_date = today
         end_date = today + timedelta(days=1)
@@ -317,7 +314,6 @@ def call_dify_api(user_id: str, text_query: str) -> dict | None:
     }
     try:
         logging.info(f"Payload enviado ao Dify:\n{json.dumps(payload, indent=2)}")
-        # Mantendo o endpoint original que funcionava para você
         response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=120)
         response.raise_for_status()
         answer_str = response.json().get("answer", "")
