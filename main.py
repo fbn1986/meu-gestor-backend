@@ -1,5 +1,5 @@
 # ==============================================================================
-# ||                   MEU GESTOR - BACKEND PRINCIPAL (com API)           ||
+# ||                      MEU GESTOR - BACKEND PRINCIPAL (com API)            ||
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
@@ -45,6 +45,9 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")
+# --- NOVO: Lendo a variável de ambiente para a URL do Dashboard ---
+DASHBOARD_URL = os.getenv("DASHBOARD_URL")
+
 
 # --- Inicialização de APIs e Serviços ---
 openai.api_key = OPENAI_API_KEY
@@ -123,7 +126,7 @@ def get_db():
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
+# ||                      FUNÇÕES DE LÓGICA DE BANCO DE DADOS                 ||
 # ==============================================================================
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
@@ -178,8 +181,24 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     start_date = None
     period_lower = period.lower()
 
-    if "mês" in period_lower: start_date = today.replace(day=1)
-    elif "hoje" in period_lower: start_date = today
+    if "mês" in period_lower:
+        start_date = today.replace(day=1)
+    
+    # --- CORREÇÃO DO BUG DE DATA ---
+    elif "hoje" in period_lower:
+        start_date = today
+        end_date = today + timedelta(days=1)
+        query = db.query(Expense).filter(
+            Expense.user_id == user.id,
+            Expense.transaction_date >= start_date,
+            Expense.transaction_date < end_date
+        )
+        if category:
+            query = query.filter(Expense.category == category)
+        expenses = query.order_by(Expense.transaction_date.asc()).all()
+        total_value = sum(expense.value for expense in expenses)
+        return expenses, total_value
+        
     elif "ontem" in period_lower:
         start_date = today - timedelta(days=1)
         end_date = today
@@ -188,8 +207,12 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         expenses = query.order_by(Expense.transaction_date.asc()).all()
         total_value = sum(expense.value for expense in expenses)
         return expenses, total_value
-    elif "7 dias" in period_lower: start_date = today - timedelta(days=7)
-    elif "30 dias" in period_lower: start_date = today - timedelta(days=30)
+        
+    elif "7 dias" in period_lower:
+        start_date = today - timedelta(days=7)
+        
+    elif "30 dias" in period_lower:
+        start_date = today - timedelta(days=30)
     
     if start_date:
         query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date)
@@ -207,16 +230,34 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     start_date = None
     period_lower = period.lower()
 
-    if "mês" in period_lower: start_date = today.replace(day=1)
-    elif "hoje" in period_lower: start_date = today
+    if "mês" in period_lower:
+        start_date = today.replace(day=1)
+
+    # --- CORREÇÃO DO BUG DE DATA ---
+    elif "hoje" in period_lower:
+        start_date = today
+        end_date = today + timedelta(days=1)
+        query = db.query(Income).filter(
+            Income.user_id == user.id,
+            Income.transaction_date >= start_date,
+            Income.transaction_date < end_date
+        )
+        incomes = query.order_by(Income.transaction_date.asc()).all()
+        total_value = sum(income.value for income in incomes)
+        return incomes, total_value
+
     elif "ontem" in period_lower:
         start_date = today - timedelta(days=1)
         end_date = today
         incomes = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date, Income.transaction_date < end_date).order_by(Income.transaction_date.asc()).all()
         total_value = sum(income.value for income in incomes)
         return incomes, total_value
-    elif "7 dias" in period_lower: start_date = today - timedelta(days=7)
-    elif "30 dias" in period_lower: start_date = today - timedelta(days=30)
+        
+    elif "7 dias" in period_lower:
+        start_date = today - timedelta(days=7)
+        
+    elif "30 dias" in period_lower:
+        start_date = today - timedelta(days=30)
     
     if start_date:
         incomes = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date).order_by(Income.transaction_date.asc()).all()
@@ -249,7 +290,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS               ||
+# ||                      FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS            ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -276,6 +317,7 @@ def call_dify_api(user_id: str, text_query: str) -> dict | None:
     }
     try:
         logging.info(f"Payload enviado ao Dify:\n{json.dumps(payload, indent=2)}")
+        # Mantendo o endpoint original que funcionava para você
         response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=120)
         response.raise_for_status()
         answer_str = response.json().get("answer", "")
@@ -302,7 +344,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                         LÓGICA DE PROCESSAMENTO                          ||
+# ||                      LÓGICA DE PROCESSAMENTO                             ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str) -> dict | None:
@@ -370,6 +412,14 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             except (ValueError, TypeError):
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
+
+        elif action == "get_dashboard_link":
+            if not DASHBOARD_URL:
+                logging.error("A variável de ambiente DASHBOARD_URL não foi configurada no Render.")
+                send_whatsapp_message(sender_number, "Desculpe, a funcionalidade de link para o painel não está configurada corretamente pelo administrador.")
+                return
+            message = f"Olá! Acesse seu painel de controle pessoal aqui: {DASHBOARD_URL}"
+            send_whatsapp_message(sender_number, message)
 
         elif action == "get_summary":
             period = dify_result.get("period", "período não identificado")
@@ -442,7 +492,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
 
 # ==============================================================================
-# ||                          APLICAÇÃO FASTAPI (ROTAS)                         ||
+# ||                      APLICAÇÃO FASTAPI (ROTAS)                           ||
 # ==============================================================================
 
 app = FastAPI()
@@ -473,7 +523,6 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
 
     phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
     
-    # <<< NOVO: Adicionado log para debugging >>>
     logging.info(f"Buscando no banco de dados por: {phone_number_jid}")
 
     user = db.query(User).filter(User.phone_number == phone_number_jid).first()
