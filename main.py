@@ -1,5 +1,5 @@
 # ==============================================================================
-# ||                      MEU GESTOR - BACKEND PRINCIPAL (com API)            ||
+# ||                               MEU GESTOR - BACKEND PRINCIPAL (com API)                               ||
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
@@ -9,7 +9,7 @@ import logging
 import json
 import os
 import re
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, time
 from typing import List, Tuple
 
 # Terceiros
@@ -27,7 +27,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                      CONFIGURAÇÃO E INICIALIZAÇÃO                        ||
+# ||                               CONFIGURAÇÃO E INICIALIZAÇÃO                               ||
 # ==============================================================================
 
 # Carrega variáveis de ambiente do arquivo .env
@@ -68,7 +68,7 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||                      MODELOS DO BANCO DE DADOS (SQLALCHEMY)              ||
+# ||                               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                               ||
 # ==============================================================================
 
 class User(Base):
@@ -125,7 +125,7 @@ def get_db():
 
 
 # ==============================================================================
-# ||                      FUNÇÕES DE LÓGICA DE BANCO DE DADOS                 ||
+# ||                               FUNÇÕES DE LÓGICA DE BANCO DE DADOS                               ||
 # ==============================================================================
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
@@ -188,27 +188,29 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
 
     if "mês" in period_lower:
         start_date_brt = today_brt.replace(day=1)
-        start_date_utc = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
     
     elif "hoje" in period_lower:
         start_date_brt = today_brt
-        start_date_utc = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
         end_date_utc = start_date_utc + timedelta(days=1)
         
     elif "ontem" in period_lower:
         yesterday_brt = today_brt - timedelta(days=1)
-        start_date_utc = datetime.combine(yesterday_brt, datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(yesterday_brt, time.min) - brt_offset
         end_date_utc = start_date_utc + timedelta(days=1)
         
     elif "semana" in period_lower or "7 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=6)
-        start_date_utc = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_utc = datetime.combine(today_brt + timedelta(days=1), datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
+        # ALTERAÇÃO: Calcula a data final somando 7 dias à data de início para garantir a inclusão do dia atual.
+        end_date_utc = start_date_utc + timedelta(days=7)
         
     elif "30 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=29)
-        start_date_utc = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_utc = datetime.combine(today_brt + timedelta(days=1), datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
+        # ALTERAÇÃO: Calcula a data final somando 30 dias à data de início.
+        end_date_utc = start_date_utc + timedelta(days=30)
     
     if start_date_utc is not None:
         query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date_utc)
@@ -238,27 +240,29 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
 
     if "mês" in period_lower:
         start_date_brt = today_brt.replace(day=1)
-        start_date_utc = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
     
     elif "hoje" in period_lower:
         start_date_brt = today_brt
-        start_date_utc = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
         end_date_utc = start_date_utc + timedelta(days=1)
         
     elif "ontem" in period_lower:
         yesterday_brt = today_brt - timedelta(days=1)
-        start_date_utc = datetime.combine(yesterday_brt, datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(yesterday_brt, time.min) - brt_offset
         end_date_utc = start_date_utc + timedelta(days=1)
         
     elif "semana" in period_lower or "7 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=6)
-        start_date_utc = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_utc = datetime.combine(today_brt + timedelta(days=1), datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
+        # ALTERAÇÃO: Calcula a data final somando 7 dias à data de início para garantir a inclusão do dia atual.
+        end_date_utc = start_date_utc + timedelta(days=7)
         
     elif "30 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=29)
-        start_date_utc = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_utc = datetime.combine(today_brt + timedelta(days=1), datetime.min.time()) - brt_offset
+        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
+        # ALTERAÇÃO: Calcula a data final somando 30 dias à data de início.
+        end_date_utc = start_date_utc + timedelta(days=30)
 
     if start_date_utc is not None:
         query = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date_utc)
@@ -295,7 +299,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                      FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS            ||
+# ||                               FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                               ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -348,7 +352,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                      LÓGICA DE PROCESSAMENTO                             ||
+# ||                               LÓGICA DE PROCESSAMENTO                               ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str) -> dict | None:
@@ -498,7 +502,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
 
 # ==============================================================================
-# ||                      APLICAÇÃO FASTAPI (ROTAS)                           ||
+# ||                               APLICAÇÃO FASTAPI (ROTAS)                               ||
 # ==============================================================================
 
 app = FastAPI()
