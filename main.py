@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import (create_engine, Column, Integer, String, Numeric,
-                        DateTime, ForeignKey, func, and_)
+                        DateTime, ForeignKey, func, and_, cast, Date) # Adicionado cast e Date
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -182,103 +182,65 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     now_brt = now_utc + brt_offset
     today_brt = now_brt.date()
 
-    start_date = None
-    end_date = None
+    query = db.query(Expense).filter(Expense.user_id == user.id)
     period_lower = period.lower()
 
     if "mês" in period_lower:
-        start_date_brt = today_brt.replace(day=1)
-        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        # Define o fim do período para garantir que dias futuros não sejam incluídos
-        end_date_brt = today_brt + timedelta(days=1)
-        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
-    
+        start_of_month = today_brt.replace(day=1)
+        query = query.filter(cast(Expense.transaction_date + brt_offset, Date) >= start_of_month)
     elif "hoje" in period_lower:
-        start_date_brt = today_brt
-        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date = start_date + timedelta(days=1)
-        
+        query = query.filter(cast(Expense.transaction_date + brt_offset, Date) == today_brt)
     elif "ontem" in period_lower:
         yesterday_brt = today_brt - timedelta(days=1)
-        start_date = datetime.combine(yesterday_brt, datetime.min.time()) - brt_offset
-        end_date = start_date + timedelta(days=1)
-        
-    elif "7 dias" in period_lower or "semana" in period_lower:
-        start_date_brt = today_brt - timedelta(days=6)
-        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_brt = today_brt + timedelta(days=1)
-        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
-        
+        query = query.filter(cast(Expense.transaction_date + brt_offset, Date) == yesterday_brt)
+    elif "semana" in period_lower or "7 dias" in period_lower:
+        seven_days_ago = today_brt - timedelta(days=6)
+        query = query.filter(cast(Expense.transaction_date + brt_offset, Date) >= seven_days_ago)
     elif "30 dias" in period_lower:
-        start_date_brt = today_brt - timedelta(days=29)
-        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_brt = today_brt + timedelta(days=1)
-        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
-    
-    if start_date is not None:
-        query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date)
-        if end_date is not None:
-            query = query.filter(Expense.transaction_date < end_date)
-        if category:
-            query = query.filter(Expense.category == category)
+        thirty_days_ago = today_brt - timedelta(days=29)
+        query = query.filter(cast(Expense.transaction_date + brt_offset, Date) >= thirty_days_ago)
+    else:
+        return None, 0.0
+
+    if category:
+        query = query.filter(Expense.category == category)
             
-        expenses = query.order_by(Expense.transaction_date.asc()).all()
-        total_value = sum(expense.value for expense in expenses)
-        return expenses, total_value
-    
-    return None, 0.0
+    expenses = query.order_by(Expense.transaction_date.asc()).all()
+    total_value = sum(expense.value for expense in expenses)
+    return expenses, total_value
 
 def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Income], float] | None:
     """Busca a lista de rendas e o valor total para um determinado período."""
     logging.info(f"Buscando resumo de créditos para o usuário {user.id} no período '{period}'")
-
+    
     brt_offset = timedelta(hours=-3)
     now_utc = datetime.utcnow()
     now_brt = now_utc + brt_offset
     today_brt = now_brt.date()
 
-    start_date = None
-    end_date = None
+    query = db.query(Income).filter(Income.user_id == user.id)
     period_lower = period.lower()
 
     if "mês" in period_lower:
-        start_date_brt = today_brt.replace(day=1)
-        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_brt = today_brt + timedelta(days=1)
-        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
-    
+        start_of_month = today_brt.replace(day=1)
+        query = query.filter(cast(Income.transaction_date + brt_offset, Date) >= start_of_month)
     elif "hoje" in period_lower:
-        start_date_brt = today_brt
-        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date = start_date + timedelta(days=1)
-        
+        query = query.filter(cast(Income.transaction_date + brt_offset, Date) == today_brt)
     elif "ontem" in period_lower:
         yesterday_brt = today_brt - timedelta(days=1)
-        start_date = datetime.combine(yesterday_brt, datetime.min.time()) - brt_offset
-        end_date = start_date + timedelta(days=1)
-        
-    elif "7 dias" in period_lower or "semana" in period_lower:
-        start_date_brt = today_brt - timedelta(days=6)
-        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_brt = today_brt + timedelta(days=1)
-        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
-        
+        query = query.filter(cast(Income.transaction_date + brt_offset, Date) == yesterday_brt)
+    elif "semana" in period_lower or "7 dias" in period_lower:
+        seven_days_ago = today_brt - timedelta(days=6)
+        query = query.filter(cast(Income.transaction_date + brt_offset, Date) >= seven_days_ago)
     elif "30 dias" in period_lower:
-        start_date_brt = today_brt - timedelta(days=29)
-        start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
-        end_date_brt = today_brt + timedelta(days=1)
-        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
+        thirty_days_ago = today_brt - timedelta(days=29)
+        query = query.filter(cast(Income.transaction_date + brt_offset, Date) >= thirty_days_ago)
+    else:
+        return None, 0.0
 
-    if start_date is not None:
-        query = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date)
-        if end_date is not None:
-            query = query.filter(Income.transaction_date < end_date)
-            
-        incomes = query.order_by(Income.transaction_date.asc()).all()
-        total_value = sum(income.value for income in incomes)
-        return incomes, total_value
-    
-    return None, 0.0
+    incomes = query.order_by(Income.transaction_date.asc()).all()
+    total_value = sum(income.value for income in incomes)
+    return incomes, total_value
 
 def delete_last_expense(db: Session, user: User) -> dict | None:
     """Encontra e apaga a última despesa registrada por um usuário."""
