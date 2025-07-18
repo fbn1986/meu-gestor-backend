@@ -9,6 +9,7 @@ import logging
 import json
 import os
 import re
+import secrets
 from datetime import datetime, date, timedelta, time
 from typing import List, Tuple, Optional
 
@@ -81,6 +82,7 @@ class User(Base):
     expenses = relationship("Expense", back_populates="user")
     incomes = relationship("Income", back_populates="user")
     reminders = relationship("Reminder", back_populates="user")
+    auth_tokens = relationship("AuthToken", back_populates="user")
 
 class Expense(Base):
     """Modelo da tabela de despesas."""
@@ -112,6 +114,15 @@ class Reminder(Base):
     is_sent = Column(String, default='false')
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="reminders")
+
+class AuthToken(Base):
+    """Modelo para tokens de autenticação temporários."""
+    __tablename__ = "auth_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    expires_at = Column(DateTime, nullable=False)
+    user = relationship("User", back_populates="auth_tokens")
 
 # Cria as tabelas no banco de dados, se não existirem
 Base.metadata.create_all(bind=engine)
@@ -149,6 +160,15 @@ def get_or_create_user(db: Session, phone_number: str) -> User:
         db.commit()
         db.refresh(user)
     return user
+
+def create_auth_token(db: Session, user: User) -> str:
+    """Cria e armazena um token de autenticação temporário para um usuário."""
+    token_str = secrets.token_urlsafe(16)
+    expires = datetime.utcnow() + timedelta(minutes=5)
+    token = AuthToken(token=token_str, user_id=user.id, expires_at=expires)
+    db.add(token)
+    db.commit()
+    return token_str
 
 def add_expense(db: Session, user: User, expense_data: dict):
     """Adiciona uma nova despesa para um usuário no banco de dados."""
@@ -477,7 +497,10 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 logging.error("A variável de ambiente DASHBOARD_URL não foi configurada no Render.")
                 send_whatsapp_message(sender_number, "Desculpe, a funcionalidade de link para o painel não está configurada corretamente pelo administrador.")
                 return
-            message = f"Olá! Acesse seu painel de controle pessoal aqui: {DASHBOARD_URL}"
+            
+            token = create_auth_token(db, user)
+            login_url = f"{DASHBOARD_URL}?token={token}"
+            message = f"Olá! Acesse seu painel de controle pessoal aqui: {login_url}"
             send_whatsapp_message(sender_number, message)
 
         elif action == "get_summary":
@@ -599,6 +622,20 @@ app.add_middleware(
 def read_root():
     """Rota principal para verificar se o servidor está online."""
     return {"Status": "Meu Gestor Backend está online!"}
+
+@app.get("/api/verify-token/{token}")
+def verify_token(token: str, db: Session = Depends(get_db)):
+    """Verifica um token de autenticação e retorna o número de telefone."""
+    token_obj = db.query(AuthToken).filter(AuthToken.token == token).first()
+    if token_obj and token_obj.expires_at > datetime.utcnow():
+        phone_number = token_obj.user.phone_number.split('@')[0]
+        db.delete(token_obj) # Token de uso único
+        db.commit()
+        return {"phone_number": phone_number}
+    if token_obj:
+        db.delete(token_obj)
+        db.commit()
+    raise HTTPException(status_code=404, detail="Token inválido ou expirado.")
 
 @app.get("/api/data/{phone_number}")
 def get_user_data(phone_number: str, db: Session = Depends(get_db)):
