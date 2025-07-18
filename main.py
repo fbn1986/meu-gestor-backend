@@ -489,8 +489,10 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                         f_cat_total = f"{data['total']:.2f}".replace('.', ',')
                         summary_message += f"\n*{cat} - Total: R$ {f_cat_total}*\n"
                         for expense in data["items"]:
+                            # ALTERAÇÃO: Adiciona a data de volta na linha da despesa
+                            date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                             f_expense_value = f"{expense.value:.2f}".replace('.', ',')
-                            summary_message += f"  - {expense.description} (R$ {f_expense_value})\n"
+                            summary_message += f"  - ({date_str}) {expense.description} (R$ {f_expense_value})\n"
                 
                 summary_message += f"\n--------------------\n"
                 balance_emoji = "📈" if balance >= 0 else "📉"
