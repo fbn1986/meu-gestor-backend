@@ -173,24 +173,20 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
     db.add(new_reminder)
     db.commit()
 
-def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float] | None:
-    """Busca a lista de despesas e o valor total para um período e categoria opcionais."""
+def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float, datetime, datetime] | None:
+    """Busca a lista de despesas, o valor total e o intervalo de datas para um período."""
     logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
     
     brt_offset = timedelta(hours=-3)
     now_brt = datetime.utcnow() + brt_offset
 
-    # Define os limites do dia atual em BRT como base
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_today_brt = start_of_today_brt + timedelta(days=1)
 
     start_brt, end_brt = None, None
     period_lower = period.lower()
-
-    # Adiciona lógica para períodos dinâmicos como "últimos X dias"
     dynamic_days_match = re.search(r'últimos (\d+) dias', period_lower)
 
-    # Calcula os limites do período solicitado com base no dia atual
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
         end_brt = end_of_today_brt
@@ -208,7 +204,6 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         start_brt = start_of_today_brt - timedelta(days=days - 1)
         end_brt = end_of_today_brt
     
-    # Se um período válido foi identificado, converte para UTC e faz a consulta
     if start_brt and end_brt:
         start_date_utc = start_brt - brt_offset
         end_date_utc = end_brt - brt_offset
@@ -221,12 +216,11 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         if category:
             query = query.filter(Expense.category == category)
             
-        # Ordena por data descendente para pegar os mais recentes primeiro.
-        expenses = query.order_by(Expense.transaction_date.desc()).all()
+        expenses = query.order_by(Expense.transaction_date.asc()).all() # Ordena ascendente para o relatório
         total_value = sum(expense.value for expense in expenses)
-        return expenses, total_value
+        return expenses, total_value, start_brt, end_brt
     
-    return None, 0.0
+    return None, 0.0, None, None
 
 def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Income], float] | None:
     """Busca a lista de rendas e o valor total para um determinado período."""
@@ -235,17 +229,13 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     brt_offset = timedelta(hours=-3)
     now_brt = datetime.utcnow() + brt_offset
 
-    # Define os limites do dia atual em BRT como base
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_today_brt = start_of_today_brt + timedelta(days=1)
 
     start_brt, end_brt = None, None
     period_lower = period.lower()
-
-    # Adiciona lógica para períodos dinâmicos como "últimos X dias"
     dynamic_days_match = re.search(r'últimos (\d+) dias', period_lower)
 
-    # Calcula os limites do período solicitado com base no dia atual
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
         end_brt = end_of_today_brt
@@ -263,7 +253,6 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
         start_brt = start_of_today_brt - timedelta(days=days - 1)
         end_brt = end_of_today_brt
 
-    # Se um período válido foi identificado, converte para UTC e faz a consulta
     if start_brt and end_brt:
         start_date_utc = start_brt - brt_offset
         end_date_utc = end_brt - brt_offset
@@ -274,8 +263,7 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
             Income.transaction_date < end_date_utc
         )
             
-        # Ordena por data descendente para pegar os mais recentes primeiro.
-        incomes = query.order_by(Income.transaction_date.desc()).all()
+        incomes = query.order_by(Income.transaction_date.asc()).all()
         total_value = sum(income.value for income in incomes)
         return incomes, total_value
     
@@ -440,70 +428,55 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             category = dify_result.get("category")
             
             expense_data = get_expenses_summary(db, user=user, period=period, category=category)
-            income_data = get_incomes_summary(db, user=user, period=period)
-
-            if expense_data is None or income_data is None:
-                send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}'. Tente 'hoje', 'ontem', ou 'este mês'.")
+            
+            if expense_data is None or expense_data[0] is None:
+                send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}'. Tente 'hoje', 'ontem', 'este mês', ou 'últimos X dias'.")
                 return
 
-            expenses, total_expenses = expense_data
-            incomes, total_incomes = income_data
-            balance = total_incomes - total_expenses
-
-            f_total_incomes = f"{total_incomes:.2f}".replace('.', ',')
-            f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
-            f_balance = f"{balance:.2f}".replace('.', ',')
-
-            summary_message = f"📊 *Balanço para '{period}'*:\n\n"
+            expenses, total_expenses, start_date, end_date = expense_data
             
-            # Se a consulta for por uma categoria específica, mantém o formato antigo
-            if category:
-                summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
-                if incomes:
-                    for income in incomes[:15]:
-                        date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
-                        summary_message += f"  - ({date_str}) {income.description}\n"
-                summary_message += "\n"
+            # Formata as datas para a mensagem de introdução
+            start_date_str = start_date.strftime('%d/%m/%Y')
+            # A data final é exclusiva, então subtraímos um dia para exibição
+            end_date_str = (end_date - timedelta(days=1)).strftime('%d/%m/%Y')
 
-                summary_message += f"💸 *Total de Despesas de '{category}': R$ {f_total_expenses}*\n"
-                if expenses:
-                    for expense in expenses: # Mostra todas as despesas da categoria
-                        date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
-                        summary_message += f"  - ({date_str}) {expense.description} (R$ {expense.value:.2f})\n"
-            
-            # Se for um resumo geral, agrupa por categoria
+            summary_message = f"Vamos lá! No período de {start_date_str} a {end_date_str}, você teve os seguintes gastos:\n\n"
+
+            if not expenses:
+                summary_message += "Nenhum gasto encontrado para este período. 🎉"
             else:
-                summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
-                if incomes:
-                    for income in incomes[:15]:
-                        date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
-                        summary_message += f"  - ({date_str}) {income.description}\n"
-                
-                summary_message += "\n--------------------\n"
-                summary_message += f"💸 *Despesas por Categoria (Total: R$ {f_total_expenses})*\n"
+                expenses_by_category = {}
+                category_emojis = {
+                    "Alimentação": "🍽️", "Transporte": "🚗", "Moradia": "🏠", 
+                    "Lazer": "🎉", "Saúde": "❤️‍🩹", "Educação": "🎓", "Outros": "🛒"
+                }
 
-                if expenses:
-                    expenses_by_category = {}
-                    for expense in expenses:
-                        cat = expense.category if expense.category else "Outros"
-                        if cat not in expenses_by_category:
-                            expenses_by_category[cat] = {"items": [], "total": 0}
-                        expenses_by_category[cat]["items"].append(expense)
-                        expenses_by_category[cat]["total"] += expense.value
+                for expense in expenses:
+                    cat = expense.category if expense.category else "Outros"
+                    if cat not in expenses_by_category:
+                        expenses_by_category[cat] = {"items": [], "total": 0}
+                    expenses_by_category[cat]["items"].append(expense)
+                    expenses_by_category[cat]["total"] += expense.value
 
-                    sorted_categories = sorted(expenses_by_category.items(), key=lambda item: item[1]['total'], reverse=True)
+                sorted_categories = sorted(expenses_by_category.items(), key=lambda item: item[1]['total'], reverse=True)
 
-                    for cat, data in sorted_categories:
-                        f_cat_total = f"{data['total']:.2f}".replace('.', ',')
-                        summary_message += f"\n*{cat} - Total: R$ {f_cat_total}*\n"
-                        for expense in data["items"]:
-                            date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
-                            f_expense_value = f"{expense.value:.2f}".replace('.', ',')
-                            summary_message += f"  - ({date_str}) {expense.description} (R$ {f_expense_value})\n"
-                
-                summary_message += f"\n--------------------\n"
-                balance_emoji = "📈" if balance >= 0 else "📉"
-                summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*"
+                for cat, data in sorted_categories:
+                    emoji = category_emojis.get(cat, "🛒")
+                    summary_message += f"{emoji} *{cat}*\n"
+                    for expense in data["items"]:
+                        date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m/%Y')
+                        f_expense_value = f"{expense.value:.2f}".replace('.', ',')
+                        summary_message += f"- {date_str}: {expense.description} - R$ {f_expense_value}\n"
+                    
+                    f_cat_total = f"{data['total']:.2f}".replace('.', ',')
+                    summary_message += f"*Subtotal {cat}: R$ {f_cat_total}*\n\n"
+            
+            f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
+            summary_message += f"--------------------\n"
+            summary_message += f"*Total Geral: R$ {f_total_expenses}*\n\n"
+            
+            if DASHBOARD_URL:
+                summary_message += f"Se precisar de mais detalhes ou visualizar os gráficos dos seus gastos, você pode acessar a plataforma web em {DASHBOARD_URL} 😉"
             
             send_whatsapp_message(sender_number, summary_message)
         
