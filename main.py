@@ -187,6 +187,9 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     start_brt, end_brt = None, None
     period_lower = period.lower()
 
+    # Adiciona lógica para períodos dinâmicos como "últimos X dias"
+    dynamic_days_match = re.search(r'últimos (\d+) dias', period_lower)
+
     # Calcula os limites do período solicitado com base no dia atual
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
@@ -200,8 +203,9 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     elif "semana" in period_lower or "7 dias" in period_lower:
         start_brt = start_of_today_brt - timedelta(days=6)
         end_brt = end_of_today_brt
-    elif "30 dias" in period_lower:
-        start_brt = start_of_today_brt - timedelta(days=29)
+    elif dynamic_days_match:
+        days = int(dynamic_days_match.group(1))
+        start_brt = start_of_today_brt - timedelta(days=days - 1)
         end_brt = end_of_today_brt
     
     # Se um período válido foi identificado, converte para UTC e faz a consulta
@@ -238,6 +242,9 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     start_brt, end_brt = None, None
     period_lower = period.lower()
 
+    # Adiciona lógica para períodos dinâmicos como "últimos X dias"
+    dynamic_days_match = re.search(r'últimos (\d+) dias', period_lower)
+
     # Calcula os limites do período solicitado com base no dia atual
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
@@ -251,8 +258,9 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     elif "semana" in period_lower or "7 dias" in period_lower:
         start_brt = start_of_today_brt - timedelta(days=6)
         end_brt = end_of_today_brt
-    elif "30 dias" in period_lower:
-        start_brt = start_of_today_brt - timedelta(days=29)
+    elif dynamic_days_match:
+        days = int(dynamic_days_match.group(1))
+        start_brt = start_of_today_brt - timedelta(days=days - 1)
         end_brt = end_of_today_brt
 
     # Se um período válido foi identificado, converte para UTC e faz a consulta
@@ -489,7 +497,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                         f_cat_total = f"{data['total']:.2f}".replace('.', ',')
                         summary_message += f"\n*{cat} - Total: R$ {f_cat_total}*\n"
                         for expense in data["items"]:
-                            # ALTERAÇÃO: Adiciona a data de volta na linha da despesa
                             date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                             f_expense_value = f"{expense.value:.2f}".replace('.', ',')
                             summary_message += f"  - ({date_str}) {expense.description} (R$ {f_expense_value})\n"
