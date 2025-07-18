@@ -178,46 +178,43 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
     
     brt_offset = timedelta(hours=-3)
-    now_utc = datetime.utcnow()
-    now_brt = now_utc + brt_offset
-    today_brt = now_brt.date()
+    now_brt = datetime.utcnow() + brt_offset
 
-    start_date_utc = None
-    end_date_utc = None
+    # --- LÓGICA DE DATAS REESTRUTURADA ---
+    # 1. Define os limites do dia atual em BRT como base
+    start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_today_brt = start_of_today_brt + timedelta(days=1)
+
+    start_brt, end_brt = None, None
     period_lower = period.lower()
 
-    # Define o fim do dia atual em UTC para ser usado como limite superior (exclusivo)
-    end_of_today_utc = datetime.combine(today_brt + timedelta(days=1), time.min) - brt_offset
-
+    # 2. Calcula os limites do período solicitado com base no dia atual
     if "mês" in period_lower:
-        start_date_brt = today_brt.replace(day=1)
-        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = end_of_today_utc
-    
+        start_brt = start_of_today_brt.replace(day=1)
+        end_brt = end_of_today_brt
     elif "hoje" in period_lower:
-        start_date_brt = today_brt
-        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = end_of_today_utc
-        
+        start_brt = start_of_today_brt
+        end_brt = end_of_today_brt
     elif "ontem" in period_lower:
-        yesterday_brt = today_brt - timedelta(days=1)
-        start_date_utc = datetime.combine(yesterday_brt, time.min) - brt_offset
-        end_date_utc = datetime.combine(today_brt, time.min) - brt_offset
-        
+        start_brt = start_of_today_brt - timedelta(days=1)
+        end_brt = start_of_today_brt
     elif "semana" in period_lower or "7 dias" in period_lower:
-        start_date_brt = today_brt - timedelta(days=6)
-        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = end_of_today_utc
-        
+        start_brt = start_of_today_brt - timedelta(days=6)
+        end_brt = end_of_today_brt
     elif "30 dias" in period_lower:
-        start_date_brt = today_brt - timedelta(days=29)
-        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = end_of_today_utc
+        start_brt = start_of_today_brt - timedelta(days=29)
+        end_brt = end_of_today_brt
     
-    if start_date_utc is not None:
-        query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date_utc)
-        if end_date_utc is not None:
-            query = query.filter(Expense.transaction_date < end_date_utc)
+    # 3. Se um período válido foi identificado, converte para UTC e faz a consulta
+    if start_brt and end_brt:
+        start_date_utc = start_brt - brt_offset
+        end_date_utc = end_brt - brt_offset
+
+        query = db.query(Expense).filter(
+            Expense.user_id == user.id,
+            Expense.transaction_date >= start_date_utc,
+            Expense.transaction_date < end_date_utc
+        )
         if category:
             query = query.filter(Expense.category == category)
             
@@ -232,46 +229,43 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     logging.info(f"Buscando resumo de créditos para o usuário {user.id} no período '{period}'")
 
     brt_offset = timedelta(hours=-3)
-    now_utc = datetime.utcnow()
-    now_brt = now_utc + brt_offset
-    today_brt = now_brt.date()
+    now_brt = datetime.utcnow() + brt_offset
 
-    start_date_utc = None
-    end_date_utc = None
+    # --- LÓGICA DE DATAS REESTRUTURADA ---
+    # 1. Define os limites do dia atual em BRT como base
+    start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_today_brt = start_of_today_brt + timedelta(days=1)
+
+    start_brt, end_brt = None, None
     period_lower = period.lower()
 
-    # Define o fim do dia atual em UTC para ser usado como limite superior (exclusivo)
-    end_of_today_utc = datetime.combine(today_brt + timedelta(days=1), time.min) - brt_offset
-
+    # 2. Calcula os limites do período solicitado com base no dia atual
     if "mês" in period_lower:
-        start_date_brt = today_brt.replace(day=1)
-        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = end_of_today_utc
-    
+        start_brt = start_of_today_brt.replace(day=1)
+        end_brt = end_of_today_brt
     elif "hoje" in period_lower:
-        start_date_brt = today_brt
-        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = end_of_today_utc
-        
+        start_brt = start_of_today_brt
+        end_brt = end_of_today_brt
     elif "ontem" in period_lower:
-        yesterday_brt = today_brt - timedelta(days=1)
-        start_date_utc = datetime.combine(yesterday_brt, time.min) - brt_offset
-        end_date_utc = datetime.combine(today_brt, time.min) - brt_offset
-        
+        start_brt = start_of_today_brt - timedelta(days=1)
+        end_brt = start_of_today_brt
     elif "semana" in period_lower or "7 dias" in period_lower:
-        start_date_brt = today_brt - timedelta(days=6)
-        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = end_of_today_utc
-        
+        start_brt = start_of_today_brt - timedelta(days=6)
+        end_brt = end_of_today_brt
     elif "30 dias" in period_lower:
-        start_date_brt = today_brt - timedelta(days=29)
-        start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = end_of_today_utc
+        start_brt = start_of_today_brt - timedelta(days=29)
+        end_brt = end_of_today_brt
 
-    if start_date_utc is not None:
-        query = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date_utc)
-        if end_date_utc is not None:
-            query = query.filter(Income.transaction_date < end_date_utc)
+    # 3. Se um período válido foi identificado, converte para UTC e faz a consulta
+    if start_brt and end_brt:
+        start_date_utc = start_brt - brt_offset
+        end_date_utc = end_brt - brt_offset
+
+        query = db.query(Income).filter(
+            Income.user_id == user.id,
+            Income.transaction_date >= start_date_utc,
+            Income.transaction_date < end_date_utc
+        )
             
         incomes = query.order_by(Income.transaction_date.asc()).all()
         total_value = sum(income.value for income in incomes)
