@@ -216,7 +216,7 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         if category:
             query = query.filter(Expense.category == category)
             
-        expenses = query.order_by(Expense.transaction_date.asc()).all() # Ordena ascendente para o relatório
+        expenses = query.order_by(Expense.transaction_date.asc()).all()
         total_value = sum(expense.value for expense in expenses)
         return expenses, total_value, start_brt, end_brt
     
@@ -427,23 +427,43 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             period = dify_result.get("period", "período não identificado")
             category = dify_result.get("category")
             
+            # Busca despesas
             expense_data = get_expenses_summary(db, user=user, period=period, category=category)
-            
-            if expense_data is None or expense_data[0] is None:
+            if expense_data is None or expense_data[2] is None:
                 send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}'. Tente 'hoje', 'ontem', 'este mês', ou 'últimos X dias'.")
                 return
-
             expenses, total_expenses, start_date, end_date = expense_data
+
+            # Busca rendas
+            income_data = get_incomes_summary(db, user=user, period=period)
+            incomes, total_incomes = (income_data if income_data else ([], 0.0))
             
+            # Calcula o balanço
+            balance = total_incomes - total_expenses
+
             # Formata as datas para a mensagem de introdução
             start_date_str = start_date.strftime('%d/%m/%Y')
-            # A data final é exclusiva, então subtraímos um dia para exibição
             end_date_str = (end_date - timedelta(days=1)).strftime('%d/%m/%Y')
 
-            summary_message = f"Vamos lá! No período de {start_date_str} a {end_date_str}, você teve os seguintes gastos:\n\n"
+            # Monta a mensagem
+            summary_message = f"Vamos lá! No período de {start_date_str} a {end_date_str}, este é o seu balanço:\n\n"
 
+            # Seção de Créditos
+            f_total_incomes = f"{total_incomes:.2f}".replace('.', ',')
+            summary_message += f"💰 *Créditos: R$ {f_total_incomes}*\n"
+            if incomes:
+                for income in incomes:
+                    date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m/%Y')
+                    f_income_value = f"{income.value:.2f}".replace('.', ',')
+                    summary_message += f"- {date_str}: {income.description} - R$ {f_income_value}\n"
+            else:
+                summary_message += "- Nenhum crédito no período.\n"
+            summary_message += "\n"
+
+            # Seção de Despesas
+            summary_message += "💸 *Despesas*\n"
             if not expenses:
-                summary_message += "Nenhum gasto encontrado para este período. 🎉"
+                summary_message += "- Nenhuma despesa no período. 🎉\n"
             else:
                 expenses_by_category = {}
                 category_emojis = {
@@ -462,18 +482,20 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
                 for cat, data in sorted_categories:
                     emoji = category_emojis.get(cat, "🛒")
-                    summary_message += f"{emoji} *{cat}*\n"
+                    summary_message += f"\n{emoji} *{cat}*\n"
                     for expense in data["items"]:
                         date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m/%Y')
                         f_expense_value = f"{expense.value:.2f}".replace('.', ',')
                         summary_message += f"- {date_str}: {expense.description} - R$ {f_expense_value}\n"
                     
                     f_cat_total = f"{data['total']:.2f}".replace('.', ',')
-                    summary_message += f"*Subtotal {cat}: R$ {f_cat_total}*\n\n"
+                    summary_message += f"*Subtotal {cat}: R$ {f_cat_total}*\n"
             
-            f_total_expenses = f"{total_expenses:.2f}".replace('.', ',')
-            summary_message += f"--------------------\n"
-            summary_message += f"*Total Geral: R$ {f_total_expenses}*\n\n"
+            # Seção do Balanço Final
+            f_balance = f"{balance:.2f}".replace('.', ',')
+            balance_emoji = "📈" if balance >= 0 else "📉"
+            summary_message += f"\n--------------------\n"
+            summary_message += f"{balance_emoji} *Balanço Final: R$ {f_balance}*\n\n"
             
             if DASHBOARD_URL:
                 summary_message += f"Se precisar de mais detalhes ou visualizar os gráficos dos seus gastos, você pode acessar a plataforma web em {DASHBOARD_URL} 😉"
