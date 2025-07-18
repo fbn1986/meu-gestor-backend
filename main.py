@@ -186,31 +186,33 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     end_date_utc = None
     period_lower = period.lower()
 
+    # Define o fim do dia atual em UTC para ser usado como limite superior (exclusivo)
+    end_of_today_utc = datetime.combine(today_brt + timedelta(days=1), time.min) - brt_offset
+
     if "mês" in period_lower:
         start_date_brt = today_brt.replace(day=1)
         start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
+        end_date_utc = end_of_today_utc
     
     elif "hoje" in period_lower:
         start_date_brt = today_brt
         start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = start_date_utc + timedelta(days=1)
+        end_date_utc = end_of_today_utc
         
     elif "ontem" in period_lower:
         yesterday_brt = today_brt - timedelta(days=1)
         start_date_utc = datetime.combine(yesterday_brt, time.min) - brt_offset
-        end_date_utc = start_date_utc + timedelta(days=1)
+        end_date_utc = datetime.combine(today_brt, time.min) - brt_offset
         
     elif "semana" in period_lower or "7 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=6)
         start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        # ALTERAÇÃO: Calcula a data final somando 7 dias à data de início para garantir a inclusão do dia atual.
-        end_date_utc = start_date_utc + timedelta(days=7)
+        end_date_utc = end_of_today_utc
         
     elif "30 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=29)
         start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        # ALTERAÇÃO: Calcula a data final somando 30 dias à data de início.
-        end_date_utc = start_date_utc + timedelta(days=30)
+        end_date_utc = end_of_today_utc
     
     if start_date_utc is not None:
         query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date_utc)
@@ -238,31 +240,33 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     end_date_utc = None
     period_lower = period.lower()
 
+    # Define o fim do dia atual em UTC para ser usado como limite superior (exclusivo)
+    end_of_today_utc = datetime.combine(today_brt + timedelta(days=1), time.min) - brt_offset
+
     if "mês" in period_lower:
         start_date_brt = today_brt.replace(day=1)
         start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
+        end_date_utc = end_of_today_utc
     
     elif "hoje" in period_lower:
         start_date_brt = today_brt
         start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        end_date_utc = start_date_utc + timedelta(days=1)
+        end_date_utc = end_of_today_utc
         
     elif "ontem" in period_lower:
         yesterday_brt = today_brt - timedelta(days=1)
         start_date_utc = datetime.combine(yesterday_brt, time.min) - brt_offset
-        end_date_utc = start_date_utc + timedelta(days=1)
+        end_date_utc = datetime.combine(today_brt, time.min) - brt_offset
         
     elif "semana" in period_lower or "7 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=6)
         start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        # ALTERAÇÃO: Calcula a data final somando 7 dias à data de início para garantir a inclusão do dia atual.
-        end_date_utc = start_date_utc + timedelta(days=7)
+        end_date_utc = end_of_today_utc
         
     elif "30 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=29)
         start_date_utc = datetime.combine(start_date_brt, time.min) - brt_offset
-        # ALTERAÇÃO: Calcula a data final somando 30 dias à data de início.
-        end_date_utc = start_date_utc + timedelta(days=30)
+        end_date_utc = end_of_today_utc
 
     if start_date_utc is not None:
         query = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date_utc)
