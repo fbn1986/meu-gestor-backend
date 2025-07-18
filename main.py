@@ -177,8 +177,6 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     """Busca a lista de despesas e o valor total para um período e categoria opcionais."""
     logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
     
-    # --- CORREÇÃO DE FUSO HORÁRIO (TIMEZONE) ---
-    # Define o fuso horário do Brasil (BRT = UTC-3)
     brt_offset = timedelta(hours=-3)
     now_utc = datetime.utcnow()
     now_brt = now_utc + brt_offset
@@ -202,12 +200,12 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         start_date = datetime.combine(yesterday_brt, datetime.min.time()) - brt_offset
         end_date = start_date + timedelta(days=1)
         
-    elif "7 dias" in period_lower:
-        start_date_brt = today_brt - timedelta(days=6) # Inclui o dia de hoje
+    elif "7 dias" in period_lower or "semana" in period_lower:
+        start_date_brt = today_brt - timedelta(days=6)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
         
     elif "30 dias" in period_lower:
-        start_date_brt = today_brt - timedelta(days=29) # Inclui o dia de hoje
+        start_date_brt = today_brt - timedelta(days=29)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
     
     if start_date is not None:
@@ -227,7 +225,6 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     """Busca a lista de rendas e o valor total para um determinado período."""
     logging.info(f"Buscando resumo de créditos para o usuário {user.id} no período '{period}'")
 
-    # --- CORREÇÃO DE FUSO HORÁRIO (TIMEZONE) ---
     brt_offset = timedelta(hours=-3)
     now_utc = datetime.utcnow()
     now_brt = now_utc + brt_offset
@@ -251,7 +248,7 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
         start_date = datetime.combine(yesterday_brt, datetime.min.time()) - brt_offset
         end_date = start_date + timedelta(days=1)
         
-    elif "7 dias" in period_lower:
+    elif "7 dias" in period_lower or "semana" in period_lower:
         start_date_brt = today_brt - timedelta(days=6)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
         
@@ -449,14 +446,18 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             if not category:
                 summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
                 if incomes:
-                    for income in incomes[:3]:
-                        summary_message += f"  - {income.description}\n"
+                    # --- ALTERAÇÃO: Adicionando data ao resumo ---
+                    for income in incomes[:5]:
+                        date_str = income.transaction_date.strftime('%d/%m')
+                        summary_message += f"  - ({date_str}) {income.description}\n"
                 summary_message += "\n"
 
             summary_message += f"💸 *Total de Despesas{category_filter_text}: R$ {f_total_expenses}*\n"
             if expenses:
+                # --- ALTERAÇÃO: Adicionando data ao resumo ---
                 for expense in expenses[:5]:
-                    summary_message += f"  - {expense.description} (R$ {expense.value:.2f})\n"
+                    date_str = expense.transaction_date.strftime('%d/%m')
+                    summary_message += f"  - ({date_str}) {expense.description} (R$ {expense.value:.2f})\n"
             
             if not category:
                 summary_message += f"\n--------------------\n"
