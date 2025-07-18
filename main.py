@@ -9,7 +9,6 @@ import logging
 import json
 import os
 import re
-import base64
 from datetime import datetime, date, timedelta, time
 from typing import List, Tuple, Optional
 
@@ -321,8 +320,8 @@ def transcribe_audio(file_path: str) -> str | None:
         logging.error(f"Erro na transcrição com Whisper: {e}")
         return None
 
-def call_dify_api(user_id: str, text_query: str, image_base64: Optional[str] = None) -> dict | None:
-    """Envia uma consulta para o agente Dify, incluindo uma imagem se fornecida."""
+def call_dify_api(user_id: str, text_query: str, image_url: Optional[str] = None) -> dict | None:
+    """Envia uma consulta para o agente Dify, incluindo uma URL de imagem se fornecida."""
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
     payload = {
         "inputs": {},
@@ -330,15 +329,15 @@ def call_dify_api(user_id: str, text_query: str, image_base64: Optional[str] = N
         "user": user_id,
         "response_mode": "blocking"
     }
-    if image_base64:
+    if image_url:
         payload["files"] = [{
             "type": "image",
-            "transfer_method": "base64",
-            "data": image_base64
+            "transfer_method": "remote_url",
+            "url": image_url
         }]
 
     try:
-        logging.info(f"Payload enviado ao Dify (sem imagem): {json.dumps({k: v for k, v in payload.items() if k != 'files'}, indent=2)}")
+        logging.info(f"Payload enviado ao Dify: {json.dumps(payload, indent=2)}")
         response = requests.post(f"{DIFY_API_URL}/chat-messages", headers=headers, json=payload, timeout=180)
         response.raise_for_status()
         answer_str = response.json().get("answer", "")
@@ -403,21 +402,17 @@ def process_audio_message(message: dict, sender_number: str) -> dict | None:
         if os.path.exists(mp3_file_path): os.remove(mp3_file_path)
 
 def process_image_message(message: dict, sender_number: str) -> dict | None:
-    """Processa uma mensagem de imagem: baixa, converte para base64 e envia para o Dify."""
+    """Processa uma mensagem de imagem: obtém a URL e a envia para o Dify."""
     logging.info(f">>> PROCESSANDO IMAGEM de [{sender_number}]")
-    media_url = message.get("url") or message.get("mediaUrl")
+    media_url = message.get("mediaUrl") or message.get("url")
     if not media_url:
         logging.warning("Mensagem de imagem sem URL.")
         return None
 
     try:
-        response = requests.get(media_url, timeout=30)
-        response.raise_for_status()
-        image_base64 = base64.b64encode(response.content).decode('utf-8')
-        
         dify_user_id = re.sub(r'\D', '', sender_number)
         prompt = "Analise este cupom fiscal e registre a despesa."
-        return call_dify_api(user_id=dify_user_id, text_query=prompt, image_base64=image_base64)
+        return call_dify_api(user_id=dify_user_id, text_query=prompt, image_url=media_url)
     except Exception as e:
         logging.error(f"Erro ao processar imagem: {e}")
         return None
