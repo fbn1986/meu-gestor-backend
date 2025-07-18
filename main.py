@@ -217,7 +217,7 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         if category:
             query = query.filter(Expense.category == category)
             
-        # ALTERAÇÃO: Ordena por data descendente para pegar os mais recentes primeiro.
+        # Ordena por data descendente para pegar os mais recentes primeiro.
         expenses = query.order_by(Expense.transaction_date.desc()).all()
         total_value = sum(expense.value for expense in expenses)
         return expenses, total_value
@@ -266,7 +266,7 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
             Income.transaction_date < end_date_utc
         )
             
-        # ALTERAÇÃO: Ordena por data descendente para pegar os mais recentes primeiro.
+        # Ordena por data descendente para pegar os mais recentes primeiro.
         incomes = query.order_by(Income.transaction_date.desc()).all()
         total_value = sum(income.value for income in incomes)
         return incomes, total_value
@@ -452,16 +452,16 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             if not category:
                 summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
                 if incomes:
-                    # Mostra os 5 créditos mais recentes
-                    for income in incomes[:5]:
+                    # ALTERAÇÃO: Mostra os 15 créditos mais recentes
+                    for income in incomes[:15]:
                         date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                         summary_message += f"  - ({date_str}) {income.description}\n"
                 summary_message += "\n"
 
             summary_message += f"💸 *Total de Despesas{category_filter_text}: R$ {f_total_expenses}*\n"
             if expenses:
-                # Mostra as 5 despesas mais recentes
-                for expense in expenses[:5]:
+                # ALTERAÇÃO: Mostra as 15 despesas mais recentes
+                for expense in expenses[:15]:
                     date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                     summary_message += f"  - ({date_str}) {expense.description} (R$ {expense.value:.2f})\n"
             
