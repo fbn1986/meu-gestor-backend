@@ -10,15 +10,16 @@ import json
 import os
 import re
 from datetime import datetime, date, timedelta, time
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 # Terceiros
 import requests
 import openai
 from dotenv import load_dotenv
 from pydub import AudioSegment
-from fastapi import FastAPI, Request, Depends
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import (create_engine, Column, Integer, String, Numeric,
                         DateTime, ForeignKey, func, and_)
@@ -114,6 +115,16 @@ class Reminder(Base):
 
 # Cria as tabelas no banco de dados, se não existirem
 Base.metadata.create_all(bind=engine)
+
+# --- Modelos Pydantic para validação de dados da API ---
+class ExpenseUpdate(BaseModel):
+    description: str
+    value: float
+    category: Optional[str] = None
+
+class IncomeUpdate(BaseModel):
+    description: str
+    value: float
 
 def get_db():
     """Função de dependência do FastAPI para obter uma sessão de DB."""
@@ -427,28 +438,22 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             period = dify_result.get("period", "período não identificado")
             category = dify_result.get("category")
             
-            # Busca despesas
             expense_data = get_expenses_summary(db, user=user, period=period, category=category)
             if expense_data is None or expense_data[2] is None:
                 send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}'. Tente 'hoje', 'ontem', 'este mês', ou 'últimos X dias'.")
                 return
             expenses, total_expenses, start_date, end_date = expense_data
 
-            # Busca rendas
             income_data = get_incomes_summary(db, user=user, period=period)
             incomes, total_incomes = (income_data if income_data else ([], 0.0))
             
-            # Calcula o balanço
             balance = total_incomes - total_expenses
 
-            # Formata as datas para a mensagem de introdução
             start_date_str = start_date.strftime('%d/%m/%Y')
             end_date_str = (end_date - timedelta(days=1)).strftime('%d/%m/%Y')
 
-            # Monta a mensagem
             summary_message = f"Vamos lá! No período de {start_date_str} a {end_date_str}, este é o seu balanço:\n\n"
 
-            # Seção de Créditos
             f_total_incomes = f"{total_incomes:.2f}".replace('.', ',')
             summary_message += f"💰 *Créditos: R$ {f_total_incomes}*\n"
             if incomes:
@@ -460,7 +465,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 summary_message += "- Nenhum crédito no período.\n"
             summary_message += "\n"
 
-            # Seção de Despesas
             summary_message += "💸 *Despesas*\n"
             if not expenses:
                 summary_message += "- Nenhuma despesa no período. 🎉\n"
@@ -491,7 +495,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                     f_cat_total = f"{data['total']:.2f}".replace('.', ',')
                     summary_message += f"*Subtotal {cat}: R$ {f_cat_total}*\n"
             
-            # Seção do Balanço Final
             f_balance = f"{balance:.2f}".replace('.', ',')
             balance_emoji = "📈" if balance >= 0 else "📉"
             summary_message += f"\n--------------------\n"
@@ -568,8 +571,7 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone_number == phone_number_jid).first()
     
     if not user:
-        logging.warning(f"Usuário não encontrado para o JID: {phone_number_jid}")
-        return {"error": "Usuário não encontrado"}
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
         
     expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
     incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
@@ -583,6 +585,73 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "expenses": expenses_data,
         "incomes": incomes_data
     }
+
+# --- ROTAS PARA EDIÇÃO E EXCLUSÃO ---
+
+def get_user_from_query(db: Session, phone_number: str) -> User:
+    """Função auxiliar para obter o usuário a partir do número de telefone na query."""
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="Número de telefone é obrigatório.")
+    
+    cleaned_number = re.sub(r'\D', '', phone_number)
+    if not cleaned_number.startswith('55'):
+        cleaned_number = f"55{cleaned_number}"
+    phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
+    
+    user = db.query(User).filter(User.phone_number == phone_number_jid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    return user
+
+@app.put("/api/expense/{expense_id}")
+def update_expense(expense_id: int, expense_data: ExpenseUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(Expense).filter(Expense.id == expense_id, Expense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Despesa não encontrada.")
+    
+    expense.description = expense_data.description
+    expense.value = expense_data.value
+    expense.category = expense_data.category
+    db.commit()
+    db.refresh(expense)
+    return expense
+
+@app.delete("/api/expense/{expense_id}")
+def delete_expense(expense_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(Expense).filter(Expense.id == expense_id, Expense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Despesa não encontrada.")
+    
+    db.delete(expense)
+    db.commit()
+    return {"status": "success", "message": "Despesa apagada."}
+
+@app.put("/api/income/{income_id}")
+def update_income(income_id: int, income_data: IncomeUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    income = db.query(Income).filter(Income.id == income_id, Income.user_id == user.id).first()
+    if not income:
+        raise HTTPException(status_code=404, detail="Crédito não encontrado.")
+        
+    income.description = income_data.description
+    income.value = income_data.value
+    db.commit()
+    db.refresh(income)
+    return income
+
+@app.delete("/api/income/{income_id}")
+def delete_income(income_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    income = db.query(Income).filter(Income.id == income_id, Income.user_id == user.id).first()
+    if not income:
+        raise HTTPException(status_code=404, detail="Crédito não encontrado.")
+        
+    db.delete(income)
+    db.commit()
+    return {"status": "success", "message": "Crédito apagado."}
+
 
 @app.post("/webhook/evolution")
 async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
