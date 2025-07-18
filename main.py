@@ -189,6 +189,9 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     if "mês" in period_lower:
         start_date_brt = today_brt.replace(day=1)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        # Define o fim do período para garantir que dias futuros não sejam incluídos
+        end_date_brt = today_brt + timedelta(days=1)
+        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
     
     elif "hoje" in period_lower:
         start_date_brt = today_brt
@@ -203,10 +206,14 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     elif "7 dias" in period_lower or "semana" in period_lower:
         start_date_brt = today_brt - timedelta(days=6)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        end_date_brt = today_brt + timedelta(days=1)
+        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
         
     elif "30 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=29)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        end_date_brt = today_brt + timedelta(days=1)
+        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
     
     if start_date is not None:
         query = db.query(Expense).filter(Expense.user_id == user.id, Expense.transaction_date >= start_date)
@@ -219,7 +226,7 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         total_value = sum(expense.value for expense in expenses)
         return expenses, total_value
     
-    return None
+    return None, 0.0
 
 def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Income], float] | None:
     """Busca a lista de rendas e o valor total para um determinado período."""
@@ -237,6 +244,8 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     if "mês" in period_lower:
         start_date_brt = today_brt.replace(day=1)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        end_date_brt = today_brt + timedelta(days=1)
+        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
     
     elif "hoje" in period_lower:
         start_date_brt = today_brt
@@ -251,10 +260,14 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     elif "7 dias" in period_lower or "semana" in period_lower:
         start_date_brt = today_brt - timedelta(days=6)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        end_date_brt = today_brt + timedelta(days=1)
+        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
         
     elif "30 dias" in period_lower:
         start_date_brt = today_brt - timedelta(days=29)
         start_date = datetime.combine(start_date_brt, datetime.min.time()) - brt_offset
+        end_date_brt = today_brt + timedelta(days=1)
+        end_date = datetime.combine(end_date_brt, datetime.min.time()) - brt_offset
 
     if start_date is not None:
         query = db.query(Income).filter(Income.user_id == user.id, Income.transaction_date >= start_date)
@@ -265,7 +278,7 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
         total_value = sum(income.value for income in incomes)
         return incomes, total_value
     
-    return None
+    return None, 0.0
 
 def delete_last_expense(db: Session, user: User) -> dict | None:
     """Encontra e apaga a última despesa registrada por um usuário."""
@@ -446,17 +459,15 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             if not category:
                 summary_message += f"💰 *Total de Créditos: R$ {f_total_incomes}*\n"
                 if incomes:
-                    # --- ALTERAÇÃO: Adicionando data ao resumo ---
                     for income in incomes[:5]:
-                        date_str = income.transaction_date.strftime('%d/%m')
+                        date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                         summary_message += f"  - ({date_str}) {income.description}\n"
                 summary_message += "\n"
 
             summary_message += f"💸 *Total de Despesas{category_filter_text}: R$ {f_total_expenses}*\n"
             if expenses:
-                # --- ALTERAÇÃO: Adicionando data ao resumo ---
                 for expense in expenses[:5]:
-                    date_str = expense.transaction_date.strftime('%d/%m')
+                    date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m')
                     summary_message += f"  - ({date_str}) {expense.description} (R$ {expense.value:.2f})\n"
             
             if not category:
