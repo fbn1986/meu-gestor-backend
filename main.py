@@ -301,6 +301,39 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     
     return None, 0.0
 
+def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List[Reminder], Optional[datetime], Optional[datetime]]:
+    """Busca lembretes para um determinado período."""
+    logging.info(f"Buscando lembretes para o usuário {user.id}, período '{period}'")
+    
+    brt_offset = timedelta(hours=-3)
+    now_brt = datetime.utcnow() + brt_offset
+
+    start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_today_brt = start_of_today_brt + timedelta(days=1)
+
+    start_brt, end_brt = None, None
+    period_lower = period.lower()
+    
+    if "hoje" in period_lower:
+        start_brt = start_of_today_brt
+        end_brt = end_of_today_brt
+    elif "amanhã" in period_lower:
+        start_brt = start_of_today_brt + timedelta(days=1)
+        end_brt = end_of_day_brt + timedelta(days=1)
+    
+    if start_brt and end_brt:
+        start_utc = start_brt - brt_offset
+        end_utc = end_brt - brt_offset
+
+        reminders = db.query(Reminder).filter(
+            Reminder.user_id == user.id,
+            Reminder.due_date >= start_utc,
+            Reminder.due_date < end_utc
+        ).order_by(Reminder.due_date.asc()).all()
+        return reminders, start_brt, end_brt
+    
+    return [], None, None
+
 def delete_last_expense(db: Session, user: User) -> dict | None:
     """Encontra e apaga a última despesa registrada por um usuário."""
     logging.info(f"Tentando apagar a última despesa do usuário {user.id}")
@@ -487,7 +520,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             due_date_str = dify_result.get('due_date')
             try:
                 due_date_obj = datetime.fromisoformat(due_date_str)
-                data_formatada = due_date_obj.strftime('%d/%m/%Y às %H:%M')
+                data_formatada = (due_date_obj - timedelta(hours=3)).strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
@@ -528,7 +561,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             summary_message += f"💰 *Créditos: R$ {f_total_incomes}*\n"
             if incomes:
                 for income in incomes:
-                    date_str = (income.transaction_date + timedelta(hours=-3)).strftime('%d/%m/%Y')
+                    date_str = (income.transaction_date - timedelta(hours=3)).strftime('%d/%m/%Y')
                     f_income_value = f"{income.value:.2f}".replace('.', ',')
                     summary_message += f"- {date_str}: {income.description} - R$ {f_income_value}\n"
             else:
@@ -558,7 +591,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                     emoji = category_emojis.get(cat, "🛒")
                     summary_message += f"\n{emoji} *{cat}*\n"
                     for expense in data["items"]:
-                        date_str = (expense.transaction_date + timedelta(hours=-3)).strftime('%d/%m/%Y')
+                        date_str = (expense.transaction_date - timedelta(hours=3)).strftime('%d/%m/%Y')
                         f_expense_value = f"{expense.value:.2f}".replace('.', ',')
                         summary_message += f"- {date_str}: {expense.description} - R$ {f_expense_value}\n"
                     
@@ -580,26 +613,18 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         elif action == "get_reminders":
             period = dify_result.get("period", "hoje")
             
-            brt_offset = timedelta(hours=-3)
-            now_brt = datetime.utcnow() + brt_offset
-            start_of_day_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_of_day_brt = start_of_day_brt + timedelta(days=1)
-            
-            start_utc = start_of_day_brt - brt_offset
-            end_utc = end_of_day_brt - brt_offset
+            reminders, start_date, end_date = get_reminders_for_period(db, user, period)
 
-            reminders = db.query(Reminder).filter(
-                Reminder.user_id == user.id,
-                Reminder.due_date >= start_utc,
-                Reminder.due_date < end_utc
-            ).order_by(Reminder.due_date.asc()).all()
+            if not start_date:
+                send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}' para os lembretes.")
+                return
 
             if not reminders:
-                message = f"Você não tem nenhum compromisso agendado para hoje! 👍"
+                message = f"Você não tem nenhum compromisso agendado para {period}! 👍"
             else:
-                message = f"🗓️ Você tem {len(reminders)} compromisso(s) hoje!\n\n"
+                message = f"🗓️ Você tem {len(reminders)} compromisso(s) para {period}!\n\n"
                 for r in reminders:
-                    due_time_brt = (r.due_date + brt_offset).strftime('%H:%M')
+                    due_time_brt = (r.due_date - timedelta(hours=3)).strftime('%H:%M')
                     message += f"• {r.description} às {due_time_brt} horas.\n"
                 message += "\nNão se preocupe, estarei aqui para te lembrar se precisar! 😉"
             
@@ -647,7 +672,7 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
     for reminder in due_reminders:
         try:
             logging.info(f"Enviando lembrete para {reminder.user.phone_number}: {reminder.description}")
-            due_time_brt = (reminder.due_date + timedelta(hours=-3)).strftime('%H:%M')
+            due_time_brt = (reminder.due_date - timedelta(hours=3)).strftime('%H:%M')
             message = f"⏰ Lembrete: {reminder.description} às {due_time_brt}hrs."
             send_whatsapp_message(reminder.user.phone_number, message)
             
