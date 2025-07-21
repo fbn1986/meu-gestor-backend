@@ -577,6 +577,34 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             
             send_whatsapp_message(sender_number, summary_message)
         
+        elif action == "get_reminders":
+            period = dify_result.get("period", "hoje")
+            
+            brt_offset = timedelta(hours=-3)
+            now_brt = datetime.utcnow() + brt_offset
+            start_of_day_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day_brt = start_of_day_brt + timedelta(days=1)
+            
+            start_utc = start_of_day_brt - brt_offset
+            end_utc = end_of_day_brt - brt_offset
+
+            reminders = db.query(Reminder).filter(
+                Reminder.user_id == user.id,
+                Reminder.due_date >= start_utc,
+                Reminder.due_date < end_utc
+            ).order_by(Reminder.due_date.asc()).all()
+
+            if not reminders:
+                message = f"Você não tem nenhum compromisso agendado para hoje! 👍"
+            else:
+                message = f"🗓️ Você tem {len(reminders)} compromisso(s) hoje!\n\n"
+                for r in reminders:
+                    due_time_brt = (r.due_date + brt_offset).strftime('%H:%M')
+                    message += f"• {r.description} às {due_time_brt} horas.\n"
+                message += "\nNão se preocupe, estarei aqui para te lembrar se precisar! 😉"
+            
+            send_whatsapp_message(sender_number, message)
+
         elif action == "delete_last_expense":
             deleted_expense = delete_last_expense(db, user=user)
             if deleted_expense:
@@ -619,7 +647,7 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
     for reminder in due_reminders:
         try:
             logging.info(f"Enviando lembrete para {reminder.user.phone_number}: {reminder.description}")
-            due_time_brt = (reminder.due_date + timedelta(hours=-3)).strftime('%H')
+            due_time_brt = (reminder.due_date + timedelta(hours=-3)).strftime('%H:%M')
             message = f"⏰ Lembrete: {reminder.description} às {due_time_brt}hrs."
             send_whatsapp_message(reminder.user.phone_number, message)
             
