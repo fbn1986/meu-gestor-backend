@@ -605,13 +605,12 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         logging.error(f"Erro ao manusear a ação '{action}': {e}")
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
-# --- NOVA FUNÇÃO PARA VERIFICAR E ENVIAR LEMBRETES ---
+# --- FUNÇÃO PARA VERIFICAR E ENVIAR LEMBRETES ---
 def check_and_send_reminders(db: Session = Depends(get_db)):
     """Verifica lembretes pendentes e envia notificações via WhatsApp."""
     now_utc = datetime.utcnow()
     logging.info(f"Verificando lembretes pendentes em {now_utc.isoformat()}")
 
-    # Busca lembretes que já passaram da hora e ainda não foram enviados
     due_reminders = db.query(Reminder).filter(
         Reminder.due_date <= now_utc,
         Reminder.is_sent == 'false'
@@ -620,10 +619,10 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
     for reminder in due_reminders:
         try:
             logging.info(f"Enviando lembrete para {reminder.user.phone_number}: {reminder.description}")
-            message = f"⏰ *Lembrete:* {reminder.description}"
+            due_time_brt = (reminder.due_date + timedelta(hours=-3)).strftime('%H')
+            message = f"⏰ Lembrete: {reminder.description} às {due_time_brt}hrs."
             send_whatsapp_message(reminder.user.phone_number, message)
             
-            # Marca como enviado para não notificar novamente
             reminder.is_sent = 'true'
             db.commit()
         except Exception as e:
@@ -651,14 +650,12 @@ def read_root():
     """Rota principal para verificar se o servidor está online."""
     return {"Status": "Meu Gestor Backend está online!"}
 
-# --- NOVA ROTA PARA ACIONAR OS LEMBRETES ---
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Rota secreta para ser chamada por um serviço de cron externo."""
     if secret_key != CRON_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Chave secreta inválida.")
     
-    # Roda a verificação em segundo plano para não bloquear a resposta
     background_tasks.add_task(check_and_send_reminders, db)
     return {"status": "success", "message": "Verificação de lembretes iniciada."}
 
