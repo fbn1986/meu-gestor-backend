@@ -3,7 +3,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO CORRIGIDA COM TRATAMENTO DE FUSO HORÁRIO (TIMEZONE-AWARE)
+# VERSÃO 2: Correção de fuso horário aplicada ao código de backup funcional.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -12,7 +12,7 @@ import os
 import re
 import secrets
 from datetime import datetime, date, timedelta, time
-from zoneinfo import ZoneInfo # <-- IMPORTANTE: Usado para lidar com fusos horários
+from zoneinfo import ZoneInfo # <-- ADICIONADO: Para lidar com fusos horários
 from typing import List, Tuple, Optional
 
 # Terceiros
@@ -52,8 +52,7 @@ FFMPEG_PATH = os.getenv("FFMPEG_PATH")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL")
 CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY")
 
-# --- Constantes de Fuso Horário ---
-# Definimos os fusos horários que vamos usar para evitar strings mágicas no código
+# --- ADICIONADO: Constantes de Fuso Horário ---
 TZ_UTC = ZoneInfo("UTC")
 TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 
@@ -80,9 +79,9 @@ except Exception as e:
 # ==============================================================================
 # ||                   MODELOS DO BANCO DE DADOS (SQLALCHEMY)                   ||
 # ==============================================================================
-# CORREÇÃO: Todas as colunas DateTime foram alteradas para DateTime(timezone=True).
-# Isso faz com que o SQLAlchemy use o tipo TIMESTAMPTZ no PostgreSQL,
-# que armazena a data/hora junto com a informação de fuso horário (internamente em UTC).
+# ALTERAÇÃO: Colunas DateTime alteradas para `DateTime(timezone=True)` para
+# armazenar informações de fuso horário corretamente no banco de dados.
+# NOTA: Pode ser necessário migrar o banco de dados para aplicar esta alteração.
 
 class User(Base):
     """Modelo da tabela de usuários."""
@@ -175,7 +174,6 @@ def get_or_create_user(db: Session, phone_number: str) -> User:
 def create_auth_token(db: Session, user: User) -> str:
     """Cria e armazena um token de autenticação temporário para um usuário."""
     token_str = secrets.token_urlsafe(16)
-    # CORREÇÃO: Usamos datetime.now(TZ_UTC) para criar um datetime "aware" em UTC.
     expires = datetime.now(TZ_UTC) + timedelta(minutes=5)
     token = AuthToken(token=token_str, user_id=user.id, expires_at=expires)
     db.add(token)
@@ -210,26 +208,27 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
     logging.info(f"Adicionando lembrete para o usuário {user.id}...")
     new_reminder = Reminder(
         description=reminder_data.get("description"),
-        due_date=reminder_data.get("due_date"), # Agora recebe um datetime "aware"
+        due_date=reminder_data.get("due_date"),
         user_id=user.id
     )
     db.add(new_reminder)
     db.commit()
 
-# --- FUNÇÕES DE RESUMO (REATORADAS PARA TIMEZONE) ---
-
-def get_period_boundaries(period: str) -> Tuple[Optional[datetime], Optional[datetime]]:
-    """Calcula as datas de início e fim de um período, retornando objetos 'aware' em UTC."""
+def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float, datetime, datetime] | None:
+    """Busca a lista de despesas, o valor total e o intervalo de datas para um período."""
+    logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
+    
     now_brt = datetime.now(TZ_SAO_PAULO)
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
-
+    
     start_brt, end_brt = None, None
     period_lower = period.lower()
     dynamic_days_match = re.search(r'últimos (\d+) dias', period_lower)
 
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
-        end_brt = (start_of_today_brt.replace(day=1) + timedelta(days=32)).replace(day=1)
+        # Ajuste para pegar até o final do dia atual do mês
+        end_brt = now_brt
     elif "hoje" in period_lower:
         start_brt = start_of_today_brt
         end_brt = start_of_today_brt + timedelta(days=1)
@@ -245,30 +244,20 @@ def get_period_boundaries(period: str) -> Tuple[Optional[datetime], Optional[dat
         end_brt = start_of_today_brt + timedelta(days=1)
     
     if start_brt and end_brt:
-        # Converte os limites do período (que estão em BRT) para UTC para a consulta no banco
-        return start_brt.astimezone(TZ_UTC), end_brt.astimezone(TZ_UTC)
-    
-    return None, None
+        start_date_utc = start_brt.astimezone(TZ_UTC)
+        end_date_utc = end_brt.astimezone(TZ_UTC)
 
-def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float, datetime, datetime] | None:
-    """Busca a lista de despesas, o valor total e o intervalo de datas para um período."""
-    logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
-    
-    start_utc, end_utc = get_period_boundaries(period)
-    
-    if start_utc and end_utc:
         query = db.query(Expense).filter(
             Expense.user_id == user.id,
-            Expense.transaction_date >= start_utc,
-            Expense.transaction_date < end_utc
+            Expense.transaction_date >= start_date_utc,
+            Expense.transaction_date < end_date_utc
         )
         if category:
-            query = query.filter(Expense.category == category)
+            query = query.filter(func.lower(Expense.category) == func.lower(category))
             
         expenses = query.order_by(Expense.transaction_date.asc()).all()
         total_value = sum(expense.value for expense in expenses)
-        # Retorna os limites em BRT para exibição
-        return expenses, total_value, start_utc.astimezone(TZ_SAO_PAULO), end_utc.astimezone(TZ_SAO_PAULO)
+        return expenses, total_value, start_brt, end_brt
     
     return None, 0.0, None, None
 
@@ -276,14 +265,40 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     """Busca a lista de rendas e o valor total para um determinado período."""
     logging.info(f"Buscando resumo de créditos para o usuário {user.id} no período '{period}'")
 
-    start_utc, end_utc = get_period_boundaries(period)
+    now_brt = datetime.now(TZ_SAO_PAULO)
+    start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    if start_utc and end_utc:
+    start_brt, end_brt = None, None
+    period_lower = period.lower()
+    dynamic_days_match = re.search(r'últimos (\d+) dias', period_lower)
+
+    if "mês" in period_lower:
+        start_brt = start_of_today_brt.replace(day=1)
+        end_brt = now_brt
+    elif "hoje" in period_lower:
+        start_brt = start_of_today_brt
+        end_brt = start_of_today_brt + timedelta(days=1)
+    elif "ontem" in period_lower:
+        start_brt = start_of_today_brt - timedelta(days=1)
+        end_brt = start_of_today_brt
+    elif "semana" in period_lower or "7 dias" in period_lower:
+        start_brt = start_of_today_brt - timedelta(days=6)
+        end_brt = start_of_today_brt + timedelta(days=1)
+    elif dynamic_days_match:
+        days = int(dynamic_days_match.group(1))
+        start_brt = start_of_today_brt - timedelta(days=days - 1)
+        end_brt = start_of_today_brt + timedelta(days=1)
+
+    if start_brt and end_brt:
+        start_date_utc = start_brt.astimezone(TZ_UTC)
+        end_date_utc = end_brt.astimezone(TZ_UTC)
+
         query = db.query(Income).filter(
             Income.user_id == user.id,
-            Income.transaction_date >= start_utc,
-            Income.transaction_date < end_utc
+            Income.transaction_date >= start_date_utc,
+            Income.transaction_date < end_date_utc
         )
+            
         incomes = query.order_by(Income.transaction_date.asc()).all()
         total_value = sum(income.value for income in incomes)
         return incomes, total_value
@@ -311,8 +326,7 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
         date_str = date_match.group(1)
         try:
             day_brt = datetime.strptime(date_str, '%d/%m/%Y')
-            # Torna o datetime "aware" com o fuso horário local
-            start_brt = day_brt.replace(tzinfo=TZ_SAO_PAULO)
+            start_brt = day_brt.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=TZ_SAO_PAULO)
             end_brt = start_brt + timedelta(days=1)
         except ValueError:
             return [], None, None
@@ -372,6 +386,7 @@ def transcribe_audio(file_path: str) -> str | None:
 
 def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) -> dict | None:
     """Envia uma consulta para o agente Dify, incluindo um file_id se fornecido."""
+    # ALTERAÇÃO: Adicionado "Bearer " ao token de autorização, que é o padrão.
     headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "inputs": {},
@@ -405,6 +420,7 @@ def send_whatsapp_message(phone_number: str, message: str):
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
     headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
     clean_number = phone_number.split('@')[0]
+    # MANTIDO: O payload original do seu código de backup.
     payload = {"number": clean_number, "options": {"delay": 1200}, "textMessage": {"text": message}}
     try:
         logging.info(f"Enviando mensagem para {clean_number}: '{message}'")
@@ -511,25 +527,20 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             send_whatsapp_message(sender_number, confirmation)
 
         elif action == "create_reminder":
-            # CORREÇÃO DE TIMEZONE NA CRIAÇÃO DE LEMBRETE
+            # CORREÇÃO DE TIMEZONE APLICADA
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             try:
-                # 1. Converte a string ISO para um datetime "ingênuo" (sem fuso)
                 naive_datetime = datetime.fromisoformat(due_date_str)
-                # 2. Atribui o fuso horário do Brasil, tornando-o "aware"
                 aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
                 
-                # 3. Atualiza o dicionário com o objeto datetime "aware" para salvar no banco.
-                # O SQLAlchemy/driver converterá automaticamente para UTC ao salvar.
                 dify_result['due_date'] = aware_datetime_brt
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
-                # 4. Formata a data para a mensagem de confirmação a partir do objeto "aware"
                 data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
-                confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso, mas não pude confirmar a data."
+                confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
 
         elif action == "get_dashboard_link":
@@ -558,7 +569,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             
             balance = total_incomes - total_expenses
 
-            # As datas já vêm em BRT da função de resumo
             start_date_str = start_date.strftime('%d/%m/%Y')
             end_date_str = (end_date - timedelta(days=1)).strftime('%d/%m/%Y')
 
@@ -568,7 +578,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             summary_message += f"💰 *Créditos: R$ {f_total_incomes}*\n"
             if incomes:
                 for income in incomes:
-                    # CORREÇÃO: Converte a data UTC do banco para BRT para exibição
                     date_str = income.transaction_date.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y')
                     f_income_value = f"{income.value:.2f}".replace('.', ',')
                     summary_message += f"- {date_str}: {income.description} - R$ {f_income_value}\n"
@@ -599,7 +608,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                     emoji = category_emojis.get(cat, "🛒")
                     summary_message += f"\n{emoji} *{cat}*\n"
                     for expense in data["items"]:
-                        # CORREÇÃO: Converte a data UTC do banco para BRT para exibição
                         date_str = expense.transaction_date.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y')
                         f_expense_value = f"{expense.value:.2f}".replace('.', ',')
                         summary_message += f"- {date_str}: {expense.description} - R$ {f_expense_value}\n"
@@ -637,9 +645,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             else:
                 message = f"🗓️ Você tem {len(reminders)} compromisso(s) para {period_display_name}!\n\n"
                 for r in reminders:
-                    # CORREÇÃO DE TIMEZONE NA EXIBIÇÃO DE LEMBRETES
-                    # 1. r.due_date vem do banco como um datetime "aware" em UTC.
-                    # 2. Convertemos para o fuso do Brasil para exibir a hora correta.
+                    # CORREÇÃO DE TIMEZONE APLICADA
                     due_time_brt = r.due_date.astimezone(TZ_SAO_PAULO)
                     hora_formatada = due_time_brt.strftime('%H:%M')
                     message += f"• {r.description} às {hora_formatada} horas.\n"
@@ -672,11 +678,11 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             send_whatsapp_message(sender_number, fallback)
 
     except Exception as e:
-        logging.error(f"Erro ao manusear a ação '{action}': {e}", exc_info=True)
+        logging.error(f"Erro ao manusear a ação '{action}': {e}")
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
 # --- FUNÇÃO PARA VERIFICAR E ENVIAR LEMBRETES ---
-def check_and_send_reminders(db: Session):
+def check_and_send_reminders(db: Session = Depends(get_db)):
     """Verifica lembretes pendentes e envia notificações via WhatsApp."""
     now_utc = datetime.now(TZ_UTC)
     logging.info(f"Verificando lembretes pendentes em {now_utc.isoformat()}")
@@ -689,7 +695,7 @@ def check_and_send_reminders(db: Session):
     for reminder in due_reminders:
         try:
             logging.info(f"Enviando lembrete para {reminder.user.phone_number}: {reminder.description}")
-            # CORREÇÃO: Converte a hora do lembrete (UTC) para o fuso do Brasil para a mensagem
+            # CORREÇÃO DE TIMEZONE APLICADA
             due_time_brt = reminder.due_date.astimezone(TZ_SAO_PAULO)
             hora_formatada = due_time_brt.strftime('%H:%M')
             message = f"⏰ Lembrete: {reminder.description} às {hora_formatada}hrs."
@@ -728,7 +734,7 @@ def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Se
     if secret_key != CRON_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Chave secreta inválida.")
     
-    background_tasks.add_task(check_and_send_reminders, db)
+    background_tasks.add_task(check_and_send_reminders, db=db)
     return {"status": "success", "message": "Verificação de lembretes iniciada."}
 
 
@@ -736,7 +742,6 @@ def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Se
 def verify_token(token: str, db: Session = Depends(get_db)):
     """Verifica um token de autenticação e retorna o número de telefone."""
     token_obj = db.query(AuthToken).filter(AuthToken.token == token).first()
-    # CORREÇÃO: Compara com um datetime "aware" em UTC
     if token_obj and token_obj.expires_at > datetime.now(TZ_UTC):
         phone_number = token_obj.user.phone_number.split('@')[0]
         db.delete(token_obj) # Token de uso único
@@ -754,11 +759,10 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     
     cleaned_number = re.sub(r'\D', '', phone_number)
     
-    # Normaliza o número para o formato do banco
-    if len(cleaned_number) <= 11: # Formato nacional (DD9NNNNNNNN)
-        phone_number_jid = f"55{cleaned_number}@s.whatsapp.net"
-    else: # Já deve estar no formato 55...
-        phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
+    if not cleaned_number.startswith('55'):
+        cleaned_number = f"55{cleaned_number}"
+
+    phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
     
     logging.info(f"Buscando no banco de dados por: {phone_number_jid}")
 
@@ -770,7 +774,6 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
     incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
     
-    # As datas agora são "aware", então o .isoformat() incluirá o fuso horário (+00:00 para UTC)
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
     incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
     
@@ -789,10 +792,9 @@ def get_user_from_query(db: Session, phone_number: str) -> User:
         raise HTTPException(status_code=400, detail="Número de telefone é obrigatório.")
     
     cleaned_number = re.sub(r'\D', '', phone_number)
-    if len(cleaned_number) <= 11:
-        phone_number_jid = f"55{cleaned_number}@s.whatsapp.net"
-    else:
-        phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
+    if not cleaned_number.startswith('55'):
+        cleaned_number = f"55{cleaned_number}"
+    phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
     
     user = db.query(User).filter(User.phone_number == phone_number_jid).first()
     if not user:
@@ -850,7 +852,7 @@ def delete_income(income_id: int, phone_number: str, db: Session = Depends(get_d
 
 
 @app.post("/webhook/evolution")
-async def evolution_webhook(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
     """Rota principal que recebe os webhooks da Evolution API."""
     data = await request.json()
     logging.info(f"DADOS RECEBIDOS: {json.dumps(data, indent=2)}")
@@ -866,13 +868,6 @@ async def evolution_webhook(request: Request, background_tasks: BackgroundTasks,
     if not sender_number or not message:
         return {"status": "dados_insuficientes"}
 
-    # Adiciona o processamento em background para responder ao webhook rapidamente
-    background_tasks.add_task(process_and_handle_message, message, sender_number, db)
-
-    return {"status": "recebido_e_em_processamento"}
-
-def process_and_handle_message(message: dict, sender_number: str, db: Session):
-    """Função executada em background para não bloquear a resposta do webhook."""
     dify_result = None
     if "conversation" in message and message["conversation"]:
         dify_result = process_text_message(message["conversation"], sender_number)
@@ -882,18 +877,19 @@ def process_and_handle_message(message: dict, sender_number: str, db: Session):
         dify_result = process_image_message(message, sender_number)
     else:
         logging.info(f"Tipo de mensagem não suportado: {list(message.keys())}")
-        return
+        return {"status": "tipo_nao_suportado"}
 
     if not dify_result:
         logging.warning("Sem resultado do Dify. Abortando.")
-        return
+        return {"status": "falha_dify"}
 
     user = get_or_create_user(db, phone_number=sender_number)
     handle_dify_action(dify_result, user, db)
+
+    return {"status": "processado"}
 
 
 # Permite rodar o servidor com `python main.py` para desenvolvimento local
 if __name__ == "__main__":
     import uvicorn
-    # Use o nome do arquivo sem a extensão .py
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
