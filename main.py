@@ -309,17 +309,25 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
     now_brt = datetime.utcnow() + brt_offset
 
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_today_brt = start_of_today_brt + timedelta(days=1)
-
+    
     start_brt, end_brt = None, None
     period_lower = period.lower()
+    date_match = re.search(r'(\d{2}/\d{2}/\d{4})', period_lower)
     
     if "hoje" in period_lower:
         start_brt = start_of_today_brt
-        end_brt = end_of_today_brt
+        end_brt = start_brt + timedelta(days=1)
     elif "amanhã" in period_lower:
         start_brt = start_of_today_brt + timedelta(days=1)
-        end_brt = end_of_day_brt + timedelta(days=1)
+        end_brt = start_brt + timedelta(days=1)
+    elif date_match:
+        date_str = date_match.group(1)
+        try:
+            day_brt = datetime.strptime(date_str, '%d/%m/%Y')
+            start_brt = day_brt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_brt = start_brt + timedelta(days=1)
+        except ValueError:
+            return [], None, None
     
     if start_brt and end_brt:
         start_utc = start_brt - brt_offset
@@ -619,10 +627,14 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}' para os lembretes.")
                 return
 
+            period_display_name = period
+            if re.search(r'(\d{2}/\d{2}/\d{4})', period):
+                period_display_name = f"o dia {period}"
+
             if not reminders:
-                message = f"Você não tem nenhum compromisso agendado para {period}! 👍"
+                message = f"Você não tem nenhum compromisso agendado para {period_display_name}! 👍"
             else:
-                message = f"🗓️ Você tem {len(reminders)} compromisso(s) para {period}!\n\n"
+                message = f"🗓️ Você tem {len(reminders)} compromisso(s) para {period_display_name}!\n\n"
                 for r in reminders:
                     due_time_brt = (r.due_date - timedelta(hours=3)).strftime('%H:%M')
                     message += f"• {r.description} às {due_time_brt} horas.\n"
