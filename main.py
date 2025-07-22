@@ -519,14 +519,18 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             try:
+                # Dify agora retorna a data em UTC, então podemos salvá-la diretamente
                 utc_datetime = datetime.fromisoformat(due_date_str)
                 dify_result['due_date'] = utc_datetime
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
+                # Para a mensagem de confirmação, converta para o fuso horário do usuário
                 local_datetime = utc_datetime.astimezone(user_timezone)
                 data_formatada = local_datetime.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
+                # Fallback caso algo dê errado
+                add_reminder(db, user=user, reminder_data=dify_result)
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
 
