@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 from datetime import datetime, date, timedelta, time
+from zoneinfo import ZoneInfo
 from typing import List, Tuple, Optional
 
 # Terceiros
@@ -48,7 +49,7 @@ EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL")
-CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY") # Nova variável para segurança
+CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY")
 
 
 # --- Inicialização de APIs e Serviços ---
@@ -79,7 +80,7 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     phone_number = Column(String, unique=True, index=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     expenses = relationship("Expense", back_populates="user")
     incomes = relationship("Income", back_populates="user")
     reminders = relationship("Reminder", back_populates="user")
@@ -92,7 +93,7 @@ class Expense(Base):
     description = Column(String, nullable=False)
     value = Column(Numeric(10, 2), nullable=False)
     category = Column(String)
-    transaction_date = Column(DateTime, default=datetime.utcnow)
+    transaction_date = Column(DateTime(timezone=True), default=datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="expenses")
 
@@ -102,7 +103,7 @@ class Income(Base):
     id = Column(Integer, primary_key=True, index=True)
     description = Column(String, nullable=False)
     value = Column(Numeric(10, 2), nullable=False)
-    transaction_date = Column(DateTime, default=datetime.utcnow)
+    transaction_date = Column(DateTime(timezone=True), default=datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="incomes")
 
@@ -111,7 +112,7 @@ class Reminder(Base):
     __tablename__ = "reminders"
     id = Column(Integer, primary_key=True, index=True)
     description = Column(String, nullable=False)
-    due_date = Column(DateTime, nullable=False)
+    due_date = Column(DateTime(timezone=True), nullable=False)
     is_sent = Column(String, default='false')
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="reminders")
@@ -122,7 +123,7 @@ class AuthToken(Base):
     id = Column(Integer, primary_key=True, index=True)
     token = Column(String, unique=True, index=True, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
-    expires_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
     user = relationship("User", back_populates="auth_tokens")
 
 # Cria as tabelas no banco de dados, se não existirem
@@ -178,7 +179,8 @@ def add_expense(db: Session, user: User, expense_data: dict):
         description=expense_data.get("description"),
         value=expense_data.get("value"),
         category=expense_data.get("category"),
-        user_id=user.id
+        user_id=user.id,
+        transaction_date=datetime.now(ZoneInfo("America/Sao_Paulo"))
     )
     db.add(new_expense)
     db.commit()
@@ -189,7 +191,8 @@ def add_income(db: Session, user: User, income_data: dict):
     new_income = Income(
         description=income_data.get("description"),
         value=income_data.get("value"),
-        user_id=user.id
+        user_id=user.id,
+        transaction_date=datetime.now(ZoneInfo("America/Sao_Paulo"))
     )
     db.add(new_income)
     db.commit()
@@ -209,41 +212,37 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     """Busca a lista de despesas, o valor total e o intervalo de datas para um período."""
     logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
     
-    brt_offset = timedelta(hours=-3)
-    now_brt = datetime.utcnow() + brt_offset
+    user_timezone = ZoneInfo("America/Sao_Paulo")
+    now_brt = datetime.now(user_timezone)
 
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_today_brt = start_of_today_brt + timedelta(days=1)
-
+    
     start_brt, end_brt = None, None
     period_lower = period.lower()
     dynamic_days_match = re.search(r'últimos (\d+) dias', period_lower)
 
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
-        end_brt = end_of_today_brt
+        end_brt = start_of_today_brt + timedelta(days=1)
     elif "hoje" in period_lower:
         start_brt = start_of_today_brt
-        end_brt = end_of_today_brt
+        end_brt = start_brt + timedelta(days=1)
     elif "ontem" in period_lower:
         start_brt = start_of_today_brt - timedelta(days=1)
         end_brt = start_of_today_brt
     elif "semana" in period_lower or "7 dias" in period_lower:
         start_brt = start_of_today_brt - timedelta(days=6)
-        end_brt = end_of_today_brt
+        end_brt = start_of_today_brt + timedelta(days=1)
     elif dynamic_days_match:
         days = int(dynamic_days_match.group(1))
         start_brt = start_of_today_brt - timedelta(days=days - 1)
-        end_brt = end_of_today_brt
+        end_brt = start_of_today_brt + timedelta(days=1)
     
     if start_brt and end_brt:
-        start_date_utc = start_brt - brt_offset
-        end_date_utc = end_brt - brt_offset
-
         query = db.query(Expense).filter(
             Expense.user_id == user.id,
-            Expense.transaction_date >= start_date_utc,
-            Expense.transaction_date < end_date_utc
+            Expense.transaction_date >= start_brt,
+            Expense.transaction_date < end_brt
         )
         if category:
             query = query.filter(Expense.category == category)
@@ -258,41 +257,37 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     """Busca a lista de rendas e o valor total para um determinado período."""
     logging.info(f"Buscando resumo de créditos para o usuário {user.id} no período '{period}'")
 
-    brt_offset = timedelta(hours=-3)
-    now_brt = datetime.utcnow() + brt_offset
+    user_timezone = ZoneInfo("America/Sao_Paulo")
+    now_brt = datetime.now(user_timezone)
 
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_today_brt = start_of_today_brt + timedelta(days=1)
-
+    
     start_brt, end_brt = None, None
     period_lower = period.lower()
     dynamic_days_match = re.search(r'últimos (\d+) dias', period_lower)
 
     if "mês" in period_lower:
         start_brt = start_of_today_brt.replace(day=1)
-        end_brt = end_of_today_brt
+        end_brt = start_of_today_brt + timedelta(days=1)
     elif "hoje" in period_lower:
         start_brt = start_of_today_brt
-        end_brt = end_of_today_brt
+        end_brt = start_brt + timedelta(days=1)
     elif "ontem" in period_lower:
         start_brt = start_of_today_brt - timedelta(days=1)
         end_brt = start_of_today_brt
     elif "semana" in period_lower or "7 dias" in period_lower:
         start_brt = start_of_today_brt - timedelta(days=6)
-        end_brt = end_of_today_brt
+        end_brt = start_of_today_brt + timedelta(days=1)
     elif dynamic_days_match:
         days = int(dynamic_days_match.group(1))
         start_brt = start_of_today_brt - timedelta(days=days - 1)
-        end_brt = end_of_today_brt
+        end_brt = start_of_today_brt + timedelta(days=1)
 
     if start_brt and end_brt:
-        start_date_utc = start_brt - brt_offset
-        end_date_utc = end_brt - brt_offset
-
         query = db.query(Income).filter(
             Income.user_id == user.id,
-            Income.transaction_date >= start_date_utc,
-            Income.transaction_date < end_date_utc
+            Income.transaction_date >= start_brt,
+            Income.transaction_date < end_brt
         )
             
         incomes = query.order_by(Income.transaction_date.asc()).all()
@@ -305,8 +300,8 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
     """Busca lembretes para um determinado período."""
     logging.info(f"Buscando lembretes para o usuário {user.id}, período '{period}'")
     
-    brt_offset = timedelta(hours=-3)
-    now_brt = datetime.utcnow() + brt_offset
+    user_timezone = ZoneInfo("America/Sao_Paulo")
+    now_brt = datetime.now(user_timezone)
 
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     
@@ -324,19 +319,16 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
         date_str = date_match.group(1)
         try:
             day_brt = datetime.strptime(date_str, '%d/%m/%Y')
-            start_brt = day_brt.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_brt = day_brt.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=user_timezone)
             end_brt = start_brt + timedelta(days=1)
         except ValueError:
             return [], None, None
     
     if start_brt and end_brt:
-        start_utc = start_brt - brt_offset
-        end_utc = end_brt - brt_offset
-
         reminders = db.query(Reminder).filter(
             Reminder.user_id == user.id,
-            Reminder.due_date >= start_utc,
-            Reminder.due_date < end_utc
+            Reminder.due_date >= start_brt,
+            Reminder.due_date < end_brt
         ).order_by(Reminder.due_date.asc()).all()
         return reminders, start_brt, end_brt
     
@@ -506,6 +498,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
     """Executa a lógica apropriada baseada na ação retornada pelo Dify."""
     action = dify_result.get("action")
     sender_number = user.phone_number
+    user_timezone = ZoneInfo("America/Sao_Paulo")
     
     try:
         if action == "register_expense":
@@ -523,12 +516,15 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             send_whatsapp_message(sender_number, confirmation)
 
         elif action == "create_reminder":
-            add_reminder(db, user=user, reminder_data=dify_result)
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             try:
-                due_date_obj = datetime.fromisoformat(due_date_str)
-                data_formatada = (due_date_obj - timedelta(hours=3)).strftime('%d/%m/%Y às %H:%M')
+                utc_datetime = datetime.fromisoformat(due_date_str)
+                dify_result['due_date'] = utc_datetime
+                add_reminder(db, user=user, reminder_data=dify_result)
+                
+                local_datetime = utc_datetime.astimezone(user_timezone)
+                data_formatada = local_datetime.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
@@ -569,7 +565,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             summary_message += f"💰 *Créditos: R$ {f_total_incomes}*\n"
             if incomes:
                 for income in incomes:
-                    date_str = (income.transaction_date - timedelta(hours=3)).strftime('%d/%m/%Y')
+                    date_str = income.transaction_date.astimezone(user_timezone).strftime('%d/%m/%Y')
                     f_income_value = f"{income.value:.2f}".replace('.', ',')
                     summary_message += f"- {date_str}: {income.description} - R$ {f_income_value}\n"
             else:
@@ -599,7 +595,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                     emoji = category_emojis.get(cat, "🛒")
                     summary_message += f"\n{emoji} *{cat}*\n"
                     for expense in data["items"]:
-                        date_str = (expense.transaction_date - timedelta(hours=3)).strftime('%d/%m/%Y')
+                        date_str = expense.transaction_date.astimezone(user_timezone).strftime('%d/%m/%Y')
                         f_expense_value = f"{expense.value:.2f}".replace('.', ',')
                         summary_message += f"- {date_str}: {expense.description} - R$ {f_expense_value}\n"
                     
@@ -636,7 +632,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             else:
                 message = f"🗓️ Você tem {len(reminders)} compromisso(s) para {period_display_name}!\n\n"
                 for r in reminders:
-                    due_time_brt = (r.due_date - timedelta(hours=3)).strftime('%H:%M')
+                    due_time_brt = r.due_date.astimezone(user_timezone).strftime('%H:%M')
                     message += f"• {r.description} às {due_time_brt} horas.\n"
                 message += "\nNão se preocupe, estarei aqui para te lembrar se precisar! 😉"
             
@@ -673,7 +669,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 # --- FUNÇÃO PARA VERIFICAR E ENVIAR LEMBRETES ---
 def check_and_send_reminders(db: Session = Depends(get_db)):
     """Verifica lembretes pendentes e envia notificações via WhatsApp."""
-    now_utc = datetime.utcnow()
+    now_utc = datetime.now(ZoneInfo("UTC"))
     logging.info(f"Verificando lembretes pendentes em {now_utc.isoformat()}")
 
     due_reminders = db.query(Reminder).filter(
@@ -681,10 +677,11 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
         Reminder.is_sent == 'false'
     ).all()
 
+    user_timezone = ZoneInfo("America/Sao_Paulo")
     for reminder in due_reminders:
         try:
             logging.info(f"Enviando lembrete para {reminder.user.phone_number}: {reminder.description}")
-            due_time_brt = (reminder.due_date - timedelta(hours=3)).strftime('%H:%M')
+            due_time_brt = reminder.due_date.astimezone(user_timezone).strftime('%H:%M')
             message = f"⏰ Lembrete: {reminder.description} às {due_time_brt}hrs."
             send_whatsapp_message(reminder.user.phone_number, message)
             
