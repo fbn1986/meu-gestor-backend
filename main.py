@@ -87,7 +87,7 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(TZ_UTC))
     expenses = relationship("Expense", back_populates="user")
     incomes = relationship("Income", back_populates="user")
-    reminders = relationship("Reminder", back_populates="user")
+    reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
     auth_tokens = relationship("AuthToken", back_populates="user")
     categories = relationship("Category", back_populates="user", cascade="all, delete-orphan")
 
