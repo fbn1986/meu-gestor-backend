@@ -3,7 +3,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 9: Restaura o formato de autenticação original do Dify e mantém as correções de fuso horário.
+# VERSÃO 10: Corrige o erro de CORS e o erro 500 na validação de token.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -197,7 +197,6 @@ def create_auth_token(db: Session, user: User) -> str:
 
 def add_expense(db: Session, user: User, expense_data: dict):
     """Adiciona uma nova despesa para um usuário no banco de dados."""
-    logging.info(f"Adicionando despesa para o usuário {user.id}...")
     new_expense = Expense(
         description=expense_data.get("description"),
         value=expense_data.get("value"),
@@ -209,7 +208,6 @@ def add_expense(db: Session, user: User, expense_data: dict):
 
 def add_income(db: Session, user: User, income_data: dict):
     """Adiciona uma nova renda para um usuário no banco de dados."""
-    logging.info(f"Adicionando renda para o usuário {user.id}...")
     new_income = Income(
         description=income_data.get("description"),
         value=income_data.get("value"),
@@ -220,7 +218,6 @@ def add_income(db: Session, user: User, income_data: dict):
 
 def add_reminder(db: Session, user: User, reminder_data: dict):
     """Adiciona um novo lembrete para um usuário no banco de dados."""
-    logging.info(f"Adicionando lembrete para o usuário {user.id}...")
     new_reminder = Reminder(
         description=reminder_data.get("description"),
         due_date=reminder_data.get("due_date"),
@@ -263,8 +260,6 @@ def delete_user_category(db: Session, user: User, category_name: str) -> bool:
 
 def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float, datetime, datetime] | None:
     """Busca a lista de despesas, o valor total e o intervalo de datas para um período."""
-    logging.info(f"Buscando resumo de despesas para o usuário {user.id}, período '{period}', categoria '{category}'")
-    
     now_brt = datetime.now(TZ_SAO_PAULO)
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     
@@ -290,13 +285,10 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         end_brt = start_of_today_brt + timedelta(days=1)
     
     if start_brt and end_brt:
-        start_date_utc = start_brt.astimezone(TZ_UTC)
-        end_date_utc = end_brt.astimezone(TZ_UTC)
-
         query = db.query(Expense).filter(
             Expense.user_id == user.id,
-            Expense.transaction_date >= start_date_utc,
-            Expense.transaction_date < end_date_utc
+            Expense.transaction_date >= start_brt,
+            Expense.transaction_date < end_brt
         )
         if category:
             query = query.filter(func.lower(Expense.category) == func.lower(category))
@@ -309,8 +301,6 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
 
 def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Income], float] | None:
     """Busca a lista de rendas e o valor total para um determinado período."""
-    logging.info(f"Buscando resumo de créditos para o usuário {user.id} no período '{period}'")
-
     now_brt = datetime.now(TZ_SAO_PAULO)
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -336,13 +326,10 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
         end_brt = start_of_today_brt + timedelta(days=1)
 
     if start_brt and end_brt:
-        start_date_utc = start_brt.astimezone(TZ_UTC)
-        end_date_utc = end_brt.astimezone(TZ_UTC)
-
         query = db.query(Income).filter(
             Income.user_id == user.id,
-            Income.transaction_date >= start_date_utc,
-            Income.transaction_date < end_date_utc
+            Income.transaction_date >= start_brt,
+            Income.transaction_date < end_brt
         )
             
         incomes = query.order_by(Income.transaction_date.asc()).all()
@@ -353,8 +340,6 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
 
 def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List[Reminder], Optional[datetime], Optional[datetime]]:
     """Busca lembretes para um determinado período."""
-    logging.info(f"Buscando lembretes para o usuário {user.id}, período '{period}'")
-    
     now_brt = datetime.now(TZ_SAO_PAULO)
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     
@@ -378,13 +363,10 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
             return [], None, None
     
     if start_brt and end_brt:
-        start_utc = start_brt.astimezone(TZ_UTC)
-        end_utc = end_brt.astimezone(TZ_UTC)
-
         reminders = db.query(Reminder).filter(
             Reminder.user_id == user.id,
-            Reminder.due_date >= start_utc,
-            Reminder.due_date < end_utc
+            Reminder.due_date >= start_brt,
+            Reminder.due_date < end_brt
         ).order_by(Reminder.due_date.asc()).all()
         return reminders, start_brt, end_brt
     
@@ -432,7 +414,7 @@ def transcribe_audio(file_path: str) -> str | None:
 
 def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) -> dict | None:
     """Envia uma consulta para o agente Dify, incluindo um file_id se fornecido."""
-    headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "inputs": {},
         "query": text_query,
@@ -533,7 +515,7 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
         
         dify_user_id = re.sub(r'\D', '', sender_number)
         upload_url = f"{DIFY_API_URL}/files/upload"
-        headers = {"Authorization": DIFY_API_KEY}
+        headers = {"Authorization": f"Bearer {DIFY_API_KEY}"}
         files = {'file': ('image.jpeg', image_content, 'image/jpeg')}
         data = {'user': dify_user_id}
         
@@ -842,16 +824,19 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
     incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
     categories = get_user_categories(db, user)
+    reminders = db.query(Reminder).filter(Reminder.user_id == user.id, Reminder.is_sent == 'false').order_by(Reminder.due_date.asc()).all()
     
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
     incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
+    reminders_data = [{"id": r.id, "description": r.description, "due_date": r.due_date.isoformat()} for r in reminders]
     
     return {
         "user_id": user.id,
         "phone_number": user.phone_number,
         "expenses": expenses_data,
         "incomes": incomes_data,
-        "categories": categories
+        "categories": categories,
+        "reminders": reminders_data
     }
 
 # --- ROTAS PARA EDIÇÃO E EXCLUSÃO ---
@@ -946,6 +931,35 @@ def delete_category_api(category_id: int, phone_number: str, db: Session = Depen
     db.delete(cat_to_delete)
     db.commit()
     return {"status": "success", "message": "Categoria apagada."}
+
+@app.put("/api/reminder/{reminder_id}")
+def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id).first()
+    if not reminder:
+        raise HTTPException(status_code=404, detail="Lembrete não encontrado.")
+    
+    reminder.description = reminder_data.description
+    try:
+        # Converte a string ISO de volta para um objeto datetime "aware"
+        reminder.due_date = datetime.fromisoformat(reminder_data.due_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de data inválido.")
+    
+    db.commit()
+    db.refresh(reminder)
+    return {"id": reminder.id, "description": reminder.description, "due_date": reminder.due_date.isoformat()}
+
+@app.delete("/api/reminder/{reminder_id}")
+def delete_reminder_api(reminder_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id).first()
+    if not reminder:
+        raise HTTPException(status_code=404, detail="Lembrete não encontrado.")
+    
+    db.delete(reminder)
+    db.commit()
+    return {"status": "success", "message": "Lembrete apagado."}
 
 
 @app.post("/webhook/evolution")
