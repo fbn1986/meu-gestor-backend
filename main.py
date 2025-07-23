@@ -3,7 +3,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 4: Adiciona funcionalidade de categorias personalizadas.
+# VERSÃO 5: Adiciona APIs para gestão de categorias pelo dashboard.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -152,6 +152,12 @@ class IncomeUpdate(BaseModel):
     description: str
     value: float
 
+class CategoryCreate(BaseModel):
+    name: str
+
+class CategoryUpdate(BaseModel):
+    name: str
+
 def get_db():
     """Função de dependência do FastAPI para obter uma sessão de DB."""
     db = SessionLocal()
@@ -219,11 +225,17 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
     db.add(new_reminder)
     db.commit()
 
-def get_user_categories(db: Session, user: User) -> List[str]:
-    """Busca todas as categorias personalizadas de um usuário."""
-    default_categories = ["Alimentação", "Transporte", "Moradia", "Lazer", "Saúde", "Educação", "Outros"]
-    custom_categories = [c.name for c in db.query(Category).filter(Category.user_id == user.id).all()]
-    return default_categories + custom_categories
+def get_user_categories(db: Session, user: User) -> List[dict]:
+    """Busca todas as categorias de um usuário (padrão e personalizadas)."""
+    default_categories = [
+        {"id": f"default_{i}", "name": name, "is_default": True}
+        for i, name in enumerate(["Alimentação", "Transporte", "Moradia", "Lazer", "Saúde", "Educação", "Outros"])
+    ]
+    custom_categories = [
+        {"id": c.id, "name": c.name, "is_default": False}
+        for c in db.query(Category).filter(Category.user_id == user.id).order_by(Category.name).all()
+    ]
+    return custom_categories + default_categories
 
 def create_user_category(db: Session, user: User, category_name: str) -> Category:
     """Cria uma nova categoria para um usuário."""
@@ -416,7 +428,7 @@ def transcribe_audio(file_path: str) -> str | None:
 
 def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) -> dict | None:
     """Envia uma consulta para o agente Dify, incluindo um file_id se fornecido."""
-    headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "inputs": {},
         "query": text_query,
@@ -449,7 +461,7 @@ def send_whatsapp_message(phone_number: str, message: str):
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
     headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
     clean_number = phone_number.split('@')[0]
-    payload = {"number": clean_number, "options": {"delay": 1200}, "text": message}
+    payload = {"number": clean_number, "options": {"delay": 1200}, "textMessage": {"text": message}}
     try:
         logging.info(f"Enviando mensagem para {clean_number}: '{message}'")
         requests.post(url, headers=headers, json=payload, timeout=30).raise_for_status()
@@ -468,7 +480,7 @@ def process_text_message(message_text: str, sender_number: str, db: Session) -> 
     user = get_or_create_user(db, sender_number)
     
     if any(keyword in message_text.lower() for keyword in ["gastei", "comprei", "paguei"]):
-        user_categories = get_user_categories(db, user)
+        user_categories = [c['name'] for c in get_user_categories(db, user)]
         category_list_str = ", ".join(user_categories)
         enriched_query = f"{message_text}. Categorize usando uma destas opções: [{category_list_str}]."
         return call_dify_api(user_id=dify_user_id, text_query=enriched_query)
@@ -517,7 +529,7 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
         
         dify_user_id = re.sub(r'\D', '', sender_number)
         upload_url = f"{DIFY_API_URL}/files/upload"
-        headers = {"Authorization": DIFY_API_KEY}
+        headers = {"Authorization": f"Bearer {DIFY_API_KEY}"}
         files = {'file': ('image.jpeg', image_content, 'image/jpeg')}
         data = {'user': dify_user_id}
         
@@ -695,7 +707,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             categories = get_user_categories(db, user)
             message = "📋 *Suas Categorias:*\n\n"
             for cat in categories:
-                message += f"• {cat}\n"
+                message += f"• {cat['name']}\n"
             send_whatsapp_message(sender_number, message)
 
         elif action == "delete_category":
@@ -826,6 +838,7 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         
     expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
     incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
+    categories = get_user_categories(db, user)
     
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
     incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
@@ -834,7 +847,8 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "user_id": user.id,
         "phone_number": user.phone_number,
         "expenses": expenses_data,
-        "incomes": incomes_data
+        "incomes": incomes_data,
+        "categories": categories
     }
 
 # --- ROTAS PARA EDIÇÃO E EXCLUSÃO ---
@@ -902,6 +916,33 @@ def delete_income(income_id: int, phone_number: str, db: Session = Depends(get_d
     db.delete(income)
     db.commit()
     return {"status": "success", "message": "Crédito apagado."}
+
+@app.post("/api/categories/{phone_number}")
+def add_category_api(phone_number: str, category: CategoryCreate, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    new_cat = create_user_category(db, user, category.name)
+    return {"id": new_cat.id, "name": new_cat.name, "is_default": False}
+
+@app.put("/api/category/{category_id}")
+def update_category_api(category_id: int, category_data: CategoryUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    cat_to_update = db.query(Category).filter(Category.id == category_id, Category.user_id == user.id).first()
+    if not cat_to_update:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada ou não pertence a este usuário.")
+    cat_to_update.name = category_data.name
+    db.commit()
+    db.refresh(cat_to_update)
+    return {"id": cat_to_update.id, "name": cat_to_update.name, "is_default": False}
+
+@app.delete("/api/category/{category_id}")
+def delete_category_api(category_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    cat_to_delete = db.query(Category).filter(Category.id == category_id, Category.user_id == user.id).first()
+    if not cat_to_delete:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada ou não pertence a este usuário.")
+    db.delete(cat_to_delete)
+    db.commit()
+    return {"status": "success", "message": "Categoria apagada."}
 
 
 @app.post("/webhook/evolution")
