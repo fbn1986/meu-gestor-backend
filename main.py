@@ -1,9 +1,7 @@
 # ==============================================================================
-# ||                               MEU GESTOR - BACKEND PRINCIPAL (com API)                               ||
+# ||                      MEU GESTOR - BACKEND PRINCIPAL (com API)                      ||
 # ==============================================================================
-# Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
-# e a nova API para servir dados ao dashboard.
-# VERSÃO 11: Restaura o formato de autenticação e envio de mensagens originais.
+# VERSÃO 11.1: Corrige a regressão do bug de fuso horário nas consultas e na criação de lembretes.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -31,7 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                               CONFIGURAÇÃO E INICIALIZAÇÃO                               ||
+# ||                      CONFIGURAÇÃO E INICIALIZAÇÃO                      ||
 # ==============================================================================
 
 # Carrega variáveis de ambiente do arquivo .env
@@ -77,7 +75,7 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||                               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                               ||
+# ||                   MODELOS DO BANCO DE DADOS (SQLALCHEMY)                   ||
 # ==============================================================================
 class User(Base):
     """Modelo da tabela de usuários."""
@@ -172,7 +170,7 @@ def get_db():
 
 
 # ==============================================================================
-# ||                               FUNÇÕES DE LÓGICA DE BANCO DE DADOS                               ||
+# ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
 # ==============================================================================
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
@@ -285,10 +283,12 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         end_brt = start_of_today_brt + timedelta(days=1)
     
     if start_brt and end_brt:
+        start_utc = start_brt.astimezone(TZ_UTC)
+        end_utc = end_brt.astimezone(TZ_UTC)
         query = db.query(Expense).filter(
             Expense.user_id == user.id,
-            Expense.transaction_date >= start_brt,
-            Expense.transaction_date < end_brt
+            Expense.transaction_date >= start_utc,
+            Expense.transaction_date < end_utc
         )
         if category:
             query = query.filter(func.lower(Expense.category) == func.lower(category))
@@ -326,10 +326,12 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
         end_brt = start_of_today_brt + timedelta(days=1)
 
     if start_brt and end_brt:
+        start_utc = start_brt.astimezone(TZ_UTC)
+        end_utc = end_brt.astimezone(TZ_UTC)
         query = db.query(Income).filter(
             Income.user_id == user.id,
-            Income.transaction_date >= start_brt,
-            Income.transaction_date < end_brt
+            Income.transaction_date >= start_utc,
+            Income.transaction_date < end_utc
         )
             
         incomes = query.order_by(Income.transaction_date.asc()).all()
@@ -363,10 +365,12 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
             return [], None, None
     
     if start_brt and end_brt:
+        start_utc = start_brt.astimezone(TZ_UTC)
+        end_utc = end_brt.astimezone(TZ_UTC)
         reminders = db.query(Reminder).filter(
             Reminder.user_id == user.id,
-            Reminder.due_date >= start_brt,
-            Reminder.due_date < end_brt
+            Reminder.due_date >= start_utc,
+            Reminder.due_date < end_utc
         ).order_by(Reminder.due_date.asc()).all()
         return reminders, start_brt, end_brt
     
@@ -374,7 +378,6 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
 
 def delete_last_expense(db: Session, user: User) -> dict | None:
     """Encontra e apaga a última despesa registrada por um usuário."""
-    logging.info(f"Tentando apagar a última despesa do usuário {user.id}")
     last_expense = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.id.desc()).first()
     if last_expense:
         deleted_details = {"description": last_expense.description, "value": float(last_expense.value)}
@@ -385,7 +388,6 @@ def delete_last_expense(db: Session, user: User) -> dict | None:
 
 def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expense | None:
     """Encontra e edita o valor da última despesa registrada por um usuário."""
-    logging.info(f"Tentando editar o valor da última despesa do usuário {user.id} para {new_value}")
     last_expense = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.id.desc()).first()
     if last_expense:
         last_expense.value = new_value
@@ -396,17 +398,15 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                               FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                               ||
+# ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                 ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
     """Transcreve um arquivo de áudio usando a API da OpenAI (Whisper)."""
-    logging.info(f"Enviando áudio '{file_path}' para transcrição...")
     try:
         with open(file_path, "rb") as audio_file:
             transcription = openai.Audio.transcribe("whisper-1", audio_file)
         text = transcription["text"]
-        logging.info(f"Transcrição bem-sucedida: '{text}'")
         return text
     except Exception as e:
         logging.error(f"Erro na transcrição com Whisper: {e}")
@@ -422,11 +422,7 @@ def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) 
         "response_mode": "blocking"
     }
     if file_id:
-        payload["files"] = [{
-            "type": "image",
-            "transfer_method": "local_file",
-            "upload_file_id": file_id
-        }]
+        payload["files"] = [{"type": "image", "transfer_method": "local_file", "upload_file_id": file_id}]
 
     try:
         logging.info(f"Payload enviado ao Dify: {json.dumps(payload, indent=2)}")
@@ -436,7 +432,7 @@ def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) 
         try:
             return json.loads(answer_str)
         except json.JSONDecodeError:
-            logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'. Tratando como 'not_understood'.")
+            logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'.")
             return {"action": "not_understood"}
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro na chamada à API do Dify: {e.response.text if e.response else e}")
@@ -456,7 +452,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                               LÓGICA DE PROCESSAMENTO                               ||
+# ||                         LÓGICA DE PROCESSAMENTO                        ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
@@ -465,10 +461,11 @@ def process_text_message(message_text: str, sender_number: str, db: Session) -> 
     dify_user_id = re.sub(r'\D', '', sender_number)
     user = get_or_create_user(db, sender_number)
     
-    if any(keyword in message_text.lower() for keyword in ["gastei", "comprei", "paguei"]):
+    # Se for uma mensagem de despesa, enriquece o prompt com as categorias do usuário
+    if any(keyword in message_text.lower() for keyword in ["gastei", "comprei", "paguei", "despesa"]):
         user_categories = [c['name'] for c in get_user_categories(db, user)]
         category_list_str = ", ".join(user_categories)
-        enriched_query = f"{message_text}. Categorize usando uma destas opções: [{category_list_str}]."
+        enriched_query = f"{message_text}. Contexto Adicional: Para o campo 'category', use uma das seguintes opções: {category_list_str}."
         return call_dify_api(user_id=dify_user_id, text_query=enriched_query)
         
     return call_dify_api(user_id=dify_user_id, text_query=message_text)
@@ -478,7 +475,6 @@ def process_audio_message(message: dict, sender_number: str, db: Session) -> dic
     logging.info(f">>> PROCESSANDO ÁUDIO de [{sender_number}]")
     media_url = message.get("url") or message.get("mediaUrl")
     if not media_url:
-        logging.warning("Mensagem de áudio sem URL.")
         return None
 
     mp3_file_path = f"temp_audio_{sender_number}.mp3"
@@ -495,6 +491,7 @@ def process_audio_message(message: dict, sender_number: str, db: Session) -> dic
         if not transcribed_text:
             return None
         
+        # Reutiliza a lógica de processamento de texto com o texto transcrito
         return process_text_message(transcribed_text, sender_number, db)
     finally:
         if os.path.exists(ogg_path): os.remove(ogg_path)
@@ -505,7 +502,6 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
     logging.info(f">>> PROCESSANDO IMAGEM de [{sender_number}]")
     media_url = message.get("mediaUrl") or message.get("url")
     if not media_url:
-        logging.warning("Mensagem de imagem sem URL.")
         return None
 
     try:
@@ -519,14 +515,12 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
         files = {'file': ('image.jpeg', image_content, 'image/jpeg')}
         data = {'user': dify_user_id}
         
-        logging.info(f"Enviando imagem para Dify upload para o usuário: {dify_user_id}")
         upload_response = requests.post(upload_url, headers=headers, files=files, data=data, timeout=60)
         upload_response.raise_for_status()
         upload_result = upload_response.json()
         file_id = upload_result.get('id')
 
         if not file_id:
-            logging.error("Falha ao obter file_id do Dify.")
             return None
 
         prompt = "Analise este cupom fiscal e registre a despesa."
@@ -560,22 +554,24 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             try:
-                utc_datetime = datetime.fromisoformat(due_date_str)
-                dify_result['due_date'] = utc_datetime
+                # CORREÇÃO DE TIMEZONE: Assume que a string do Dify é a hora local e a torna "aware"
+                naive_datetime = datetime.fromisoformat(due_date_str)
+                aware_brt_datetime = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
+                
+                dify_result['due_date'] = aware_brt_datetime
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
-                local_datetime = utc_datetime.astimezone(TZ_SAO_PAULO)
-                data_formatada = local_datetime.strftime('%d/%m/%Y às %H:%M')
+                data_formatada = aware_brt_datetime.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
+                # Fallback caso a data venha em formato inesperado
                 add_reminder(db, user=user, reminder_data=dify_result)
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
 
         elif action == "get_dashboard_link":
             if not DASHBOARD_URL:
-                logging.error("A variável de ambiente DASHBOARD_URL não foi configurada no Render.")
-                send_whatsapp_message(sender_number, "Desculpe, a funcionalidade de link para o painel não está configurada corretamente pelo administrador.")
+                send_whatsapp_message(sender_number, "Desculpe, a funcionalidade de link para o painel não está configurada.")
                 return
             
             token = create_auth_token(db, user)
@@ -619,10 +615,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 summary_message += "- Nenhuma despesa no período. 🎉\n"
             else:
                 expenses_by_category = {}
-                category_emojis = {
-                    "Alimentação": "🍽️", "Transporte": "🚗", "Moradia": "🏠", 
-                    "Lazer": "🎉", "Saúde": "❤️‍🩹", "Educação": "🎓", "Outros": "🛒"
-                }
+                category_emojis = { "Alimentação": "🍽️", "Transporte": "🚗", "Moradia": "🏠", "Lazer": "🎉", "Saúde": "❤️‍🩹", "Educação": "🎓", "Outros": "🛒" }
 
                 for expense in expenses:
                     cat = expense.category if expense.category else "Outros"
@@ -652,14 +645,13 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             if DASHBOARD_URL:
                 token = create_auth_token(db, user)
                 login_url = f"{DASHBOARD_URL}?token={token}"
-                summary_message += f"Se precisar de mais detalhes ou visualizar os gráficos dos seus gastos, você pode acessar a plataforma web em {login_url} 😉"
+                summary_message += f"Para mais detalhes, acesse seu painel: {login_url} 😉"
             
             send_whatsapp_message(sender_number, summary_message)
         
         elif action == "get_reminders":
             period = dify_result.get("period", "hoje")
-            
-            reminders, start_date, end_date = get_reminders_for_period(db, user, period)
+            reminders, start_date, _ = get_reminders_for_period(db, user, period)
 
             if not start_date:
                 send_whatsapp_message(sender_number, f"Não consegui entender o período '{period}' para os lembretes.")
@@ -759,28 +751,19 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
 
 
 # ==============================================================================
-# ||                               APLICAÇÃO FASTAPI (ROTAS)                               ||
+# ||                       APLICAÇÃO FASTAPI (ROTAS)                        ||
 # ==============================================================================
 
 app = FastAPI()
 
-# Configuração do CORS para permitir acesso do dashboard
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/")
 def read_root():
-    """Rota principal para verificar se o servidor está online."""
     return {"Status": "Meu Gestor Backend está online!"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """Rota secreta para ser chamada por um serviço de cron externo."""
     if secret_key != CRON_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Chave secreta inválida.")
     
@@ -790,11 +773,10 @@ def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Se
 
 @app.get("/api/verify-token/{token}")
 def verify_token(token: str, db: Session = Depends(get_db)):
-    """Verifica um token de autenticação e retorna o número de telefone."""
     token_obj = db.query(AuthToken).filter(AuthToken.token == token).first()
     if token_obj and token_obj.expires_at > datetime.now(TZ_UTC):
         phone_number = token_obj.user.phone_number.split('@')[0]
-        db.delete(token_obj) # Token de uso único
+        db.delete(token_obj)
         db.commit()
         return {"phone_number": phone_number}
     if token_obj:
@@ -802,25 +784,23 @@ def verify_token(token: str, db: Session = Depends(get_db)):
         db.commit()
     raise HTTPException(status_code=404, detail="Token inválido ou expirado.")
 
-@app.get("/api/data/{phone_number}")
-def get_user_data(phone_number: str, db: Session = Depends(get_db)):
-    """Busca todos os dados financeiros para um determinado número de telefone."""
-    logging.info(f"Recebida requisição de dados para o número: {phone_number}")
+def get_user_from_query(db: Session, phone_number: str) -> User:
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="Número de telefone é obrigatório.")
     
     cleaned_number = re.sub(r'\D', '', phone_number)
-    
     if not cleaned_number.startswith('55'):
         cleaned_number = f"55{cleaned_number}"
-
     phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
     
-    logging.info(f"Buscando no banco de dados por: {phone_number_jid}")
-
     user = db.query(User).filter(User.phone_number == phone_number_jid).first()
-    
     if not user:
-        raise HTTPException(status_code=404, detail="Usuário não encontrado")
-        
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    return user
+
+@app.get("/api/data/{phone_number}")
+def get_user_data(phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
     expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
     incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
     categories = get_user_categories(db, user)
@@ -838,23 +818,6 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "categories": categories,
         "reminders": reminders_data
     }
-
-# --- ROTAS PARA EDIÇÃO E EXCLUSÃO ---
-
-def get_user_from_query(db: Session, phone_number: str) -> User:
-    """Função auxiliar para obter o usuário a partir do número de telefone na query."""
-    if not phone_number:
-        raise HTTPException(status_code=400, detail="Número de telefone é obrigatório.")
-    
-    cleaned_number = re.sub(r'\D', '', phone_number)
-    if not cleaned_number.startswith('55'):
-        cleaned_number = f"55{cleaned_number}"
-    phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
-    
-    user = db.query(User).filter(User.phone_number == phone_number_jid).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
-    return user
 
 @app.put("/api/expense/{expense_id}")
 def update_expense(expense_id: int, expense_data: ExpenseUpdate, phone_number: str, db: Session = Depends(get_db)):
