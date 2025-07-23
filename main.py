@@ -3,7 +3,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 5: Adiciona APIs para gestão de categorias pelo dashboard.
+# VERSÃO 6: Corrige o formato de autenticação da API do Dify.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -574,13 +574,12 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             try:
-                naive_datetime = datetime.fromisoformat(due_date_str)
-                aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
-                
-                dify_result['due_date'] = aware_datetime_brt
+                utc_datetime = datetime.fromisoformat(due_date_str)
+                dify_result['due_date'] = utc_datetime
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
-                data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
+                local_datetime = utc_datetime.astimezone(TZ_SAO_PAULO)
+                data_formatada = local_datetime.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
                 add_reminder(db, user=user, reminder_data=dify_result)
