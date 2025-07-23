@@ -3,7 +3,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 10: Corrige o erro de CORS e o erro 500 na validação de token.
+# VERSÃO 11: Restaura o formato de autenticação e envio de mensagens originais.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -414,7 +414,7 @@ def transcribe_audio(file_path: str) -> str | None:
 
 def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) -> dict | None:
     """Envia uma consulta para o agente Dify, incluindo um file_id se fornecido."""
-    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
     payload = {
         "inputs": {},
         "query": text_query,
@@ -515,7 +515,7 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
         
         dify_user_id = re.sub(r'\D', '', sender_number)
         upload_url = f"{DIFY_API_URL}/files/upload"
-        headers = {"Authorization": f"Bearer {DIFY_API_KEY}"}
+        headers = {"Authorization": DIFY_API_KEY}
         files = {'file': ('image.jpeg', image_content, 'image/jpeg')}
         data = {'user': dify_user_id}
         
