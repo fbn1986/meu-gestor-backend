@@ -3,7 +3,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 7: Adiciona funcionalidade de categorias personalizadas e corrige Dify Auth.
+# VERSÃO 8: Adiciona APIs para gestão de lembretes (Agenda) pelo dashboard.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -157,6 +157,10 @@ class CategoryCreate(BaseModel):
 
 class CategoryUpdate(BaseModel):
     name: str
+
+class ReminderUpdate(BaseModel):
+    description: str
+    due_date: str # Receber como string ISO e converter
 
 def get_db():
     """Função de dependência do FastAPI para obter uma sessão de DB."""
@@ -428,7 +432,7 @@ def transcribe_audio(file_path: str) -> str | None:
 
 def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) -> dict | None:
     """Envia uma consulta para o agente Dify, incluindo um file_id se fornecido."""
-    headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "inputs": {},
         "query": text_query,
@@ -529,7 +533,7 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
         
         dify_user_id = re.sub(r'\D', '', sender_number)
         upload_url = f"{DIFY_API_URL}/files/upload"
-        headers = {"Authorization": DIFY_API_KEY}
+        headers = {"Authorization": f"Bearer {DIFY_API_KEY}"}
         files = {'file': ('image.jpeg', image_content, 'image/jpeg')}
         data = {'user': dify_user_id}
         
@@ -574,13 +578,12 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             try:
-                naive_datetime = datetime.fromisoformat(due_date_str)
-                aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
-                
-                dify_result['due_date'] = aware_datetime_brt
+                utc_datetime = datetime.fromisoformat(due_date_str)
+                dify_result['due_date'] = utc_datetime
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
-                data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
+                local_datetime = utc_datetime.astimezone(TZ_SAO_PAULO)
+                data_formatada = local_datetime.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
                 add_reminder(db, user=user, reminder_data=dify_result)
@@ -622,7 +625,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             summary_message += f"💰 *Créditos: R$ {f_total_incomes}*\n"
             if incomes:
                 for income in incomes:
-                    date_str = (income.transaction_date - timedelta(hours=3)).strftime('%d/%m/%Y')
+                    date_str = income.transaction_date.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y')
                     f_income_value = f"{income.value:.2f}".replace('.', ',')
                     summary_message += f"- {date_str}: {income.description} - R$ {f_income_value}\n"
             else:
@@ -652,7 +655,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                     emoji = category_emojis.get(cat, "🛒")
                     summary_message += f"\n{emoji} *{cat}*\n"
                     for expense in data["items"]:
-                        date_str = (expense.transaction_date - timedelta(hours=3)).strftime('%d/%m/%Y')
+                        date_str = expense.transaction_date.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y')
                         f_expense_value = f"{expense.value:.2f}".replace('.', ',')
                         summary_message += f"- {date_str}: {expense.description} - R$ {f_expense_value}\n"
                     
@@ -689,7 +692,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             else:
                 message = f"🗓️ Você tem {len(reminders)} compromisso(s) para {period_display_name}!\n\n"
                 for r in reminders:
-                    due_time_brt = (r.due_date - timedelta(hours=3)).strftime('%H:%M')
+                    due_time_brt = r.due_date.astimezone(TZ_SAO_PAULO).strftime('%H:%M')
                     message += f"• {r.description} às {due_time_brt} horas.\n"
                 message += "\nNão se preocupe, estarei aqui para te lembrar se precisar! 😉"
             
