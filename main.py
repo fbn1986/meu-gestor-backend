@@ -1,9 +1,9 @@
 # ==============================================================================
-# ||                      MEU GESTOR - BACKEND PRINCIPAL (com API)                      ||
+# ||                               MEU GESTOR - BACKEND PRINCIPAL (com API)                               ||
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 3: Mantém a correção de fuso horário e reverte o payload de envio de mensagem para o formato original.
+# VERSÃO 4: Adiciona funcionalidade de categorias personalizadas.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -12,7 +12,7 @@ import os
 import re
 import secrets
 from datetime import datetime, date, timedelta, time
-from zoneinfo import ZoneInfo # <-- ADICIONADO: Para lidar com fusos horários
+from zoneinfo import ZoneInfo
 from typing import List, Tuple, Optional
 
 # Terceiros
@@ -31,7 +31,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                      CONFIGURAÇÃO E INICIALIZAÇÃO                      ||
+# ||                               CONFIGURAÇÃO E INICIALIZAÇÃO                               ||
 # ==============================================================================
 
 # Carrega variáveis de ambiente do arquivo .env
@@ -52,7 +52,7 @@ FFMPEG_PATH = os.getenv("FFMPEG_PATH")
 DASHBOARD_URL = os.getenv("DASHBOARD_URL")
 CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY")
 
-# --- ADICIONADO: Constantes de Fuso Horário ---
+# --- Constantes de Fuso Horário ---
 TZ_UTC = ZoneInfo("UTC")
 TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 
@@ -77,9 +77,8 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||                   MODELOS DO BANCO DE DADOS (SQLALCHEMY)                   ||
+# ||                               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                               ||
 # ==============================================================================
-# ALTERAÇÃO: Colunas DateTime alteradas para `DateTime(timezone=True)`
 class User(Base):
     """Modelo da tabela de usuários."""
     __tablename__ = "users"
@@ -90,6 +89,7 @@ class User(Base):
     incomes = relationship("Income", back_populates="user")
     reminders = relationship("Reminder", back_populates="user")
     auth_tokens = relationship("AuthToken", back_populates="user")
+    categories = relationship("Category", back_populates="user", cascade="all, delete-orphan")
 
 class Expense(Base):
     """Modelo da tabela de despesas."""
@@ -131,6 +131,14 @@ class AuthToken(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False)
     user = relationship("User", back_populates="auth_tokens")
 
+class Category(Base):
+    """Modelo para categorias personalizadas de usuários."""
+    __tablename__ = "categories"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="categories")
+
 # Cria as tabelas no banco de dados, se não existirem
 Base.metadata.create_all(bind=engine)
 
@@ -154,7 +162,7 @@ def get_db():
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
+# ||                               FUNÇÕES DE LÓGICA DE BANCO DE DADOS                               ||
 # ==============================================================================
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
@@ -210,6 +218,32 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
     )
     db.add(new_reminder)
     db.commit()
+
+def get_user_categories(db: Session, user: User) -> List[str]:
+    """Busca todas as categorias personalizadas de um usuário."""
+    default_categories = ["Alimentação", "Transporte", "Moradia", "Lazer", "Saúde", "Educação", "Outros"]
+    custom_categories = [c.name for c in db.query(Category).filter(Category.user_id == user.id).all()]
+    return default_categories + custom_categories
+
+def create_user_category(db: Session, user: User, category_name: str) -> Category:
+    """Cria uma nova categoria para um usuário."""
+    new_category = Category(name=category_name, user_id=user.id)
+    db.add(new_category)
+    db.commit()
+    db.refresh(new_category)
+    return new_category
+
+def delete_user_category(db: Session, user: User, category_name: str) -> bool:
+    """Apaga uma categoria personalizada de um usuário."""
+    category_to_delete = db.query(Category).filter(
+        func.lower(Category.name) == func.lower(category_name),
+        Category.user_id == user.id
+    ).first()
+    if category_to_delete:
+        db.delete(category_to_delete)
+        db.commit()
+        return True
+    return False
 
 def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float, datetime, datetime] | None:
     """Busca a lista de despesas, o valor total e o intervalo de datas para um período."""
@@ -364,7 +398,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||               FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                 ||
+# ||                               FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                               ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -382,7 +416,6 @@ def transcribe_audio(file_path: str) -> str | None:
 
 def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) -> dict | None:
     """Envia uma consulta para o agente Dify, incluindo um file_id se fornecido."""
-    # REVERTIDO: Cabeçalho de autorização para o formato original do seu backup.
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
     payload = {
         "inputs": {},
@@ -416,7 +449,6 @@ def send_whatsapp_message(phone_number: str, message: str):
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
     headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
     clean_number = phone_number.split('@')[0]
-    # REVERTIDO: Payload para o formato original do seu backup, que estava correto.
     payload = {"number": clean_number, "options": {"delay": 1200}, "text": message}
     try:
         logging.info(f"Enviando mensagem para {clean_number}: '{message}'")
@@ -426,16 +458,24 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                         LÓGICA DE PROCESSAMENTO                        ||
+# ||                               LÓGICA DE PROCESSAMENTO                               ||
 # ==============================================================================
 
-def process_text_message(message_text: str, sender_number: str) -> dict | None:
+def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
     """Processa uma mensagem de texto chamando a API do Dify."""
     logging.info(f">>> PROCESSANDO TEXTO: [{sender_number}]")
     dify_user_id = re.sub(r'\D', '', sender_number)
+    user = get_or_create_user(db, sender_number)
+    
+    if any(keyword in message_text.lower() for keyword in ["gastei", "comprei", "paguei"]):
+        user_categories = get_user_categories(db, user)
+        category_list_str = ", ".join(user_categories)
+        enriched_query = f"{message_text}. Categorize usando uma destas opções: [{category_list_str}]."
+        return call_dify_api(user_id=dify_user_id, text_query=enriched_query)
+        
     return call_dify_api(user_id=dify_user_id, text_query=message_text)
 
-def process_audio_message(message: dict, sender_number: str) -> dict | None:
+def process_audio_message(message: dict, sender_number: str, db: Session) -> dict | None:
     """Processa uma mensagem de áudio: baixa, converte, transcreve e envia para o Dify."""
     logging.info(f">>> PROCESSANDO ÁUDIO de [{sender_number}]")
     media_url = message.get("url") or message.get("mediaUrl")
@@ -457,8 +497,7 @@ def process_audio_message(message: dict, sender_number: str) -> dict | None:
         if not transcribed_text:
             return None
         
-        dify_user_id = re.sub(r'\D', '', sender_number)
-        return call_dify_api(user_id=dify_user_id, text_query=transcribed_text)
+        return process_text_message(transcribed_text, sender_number, db)
     finally:
         if os.path.exists(ogg_path): os.remove(ogg_path)
         if os.path.exists(mp3_file_path): os.remove(mp3_file_path)
@@ -472,15 +511,12 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
         return None
 
     try:
-        # 1. Baixar a imagem
         response = requests.get(media_url, timeout=30)
         response.raise_for_status()
         image_content = response.content
         
-        # 2. Fazer o upload para o Dify
         dify_user_id = re.sub(r'\D', '', sender_number)
         upload_url = f"{DIFY_API_URL}/files/upload"
-        # REVERTIDO: Cabeçalho de autorização para o formato original.
         headers = {"Authorization": DIFY_API_KEY}
         files = {'file': ('image.jpeg', image_content, 'image/jpeg')}
         data = {'user': dify_user_id}
@@ -495,7 +531,6 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
             logging.error("Falha ao obter file_id do Dify.")
             return None
 
-        # 3. Enviar para o chat com a referência do arquivo
         prompt = "Analise este cupom fiscal e registre a despesa."
         return call_dify_api(user_id=dify_user_id, text_query=prompt, file_id=file_id)
         
@@ -524,7 +559,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             send_whatsapp_message(sender_number, confirmation)
 
         elif action == "create_reminder":
-            # CORREÇÃO DE TIMEZONE APLICADA
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             try:
@@ -537,7 +571,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
-                # Mantém o fallback do código original
                 add_reminder(db, user=user, reminder_data=dify_result)
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
@@ -577,7 +610,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             summary_message += f"💰 *Créditos: R$ {f_total_incomes}*\n"
             if incomes:
                 for income in incomes:
-                    # CORREÇÃO: Converte data UTC do DB para BRT para exibição
                     date_str = income.transaction_date.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y')
                     f_income_value = f"{income.value:.2f}".replace('.', ',')
                     summary_message += f"- {date_str}: {income.description} - R$ {f_income_value}\n"
@@ -608,7 +640,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                     emoji = category_emojis.get(cat, "🛒")
                     summary_message += f"\n{emoji} *{cat}*\n"
                     for expense in data["items"]:
-                        # CORREÇÃO: Converte data UTC do DB para BRT para exibição
                         date_str = expense.transaction_date.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y')
                         f_expense_value = f"{expense.value:.2f}".replace('.', ',')
                         summary_message += f"- {date_str}: {expense.description} - R$ {f_expense_value}\n"
@@ -646,13 +677,36 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             else:
                 message = f"🗓️ Você tem {len(reminders)} compromisso(s) para {period_display_name}!\n\n"
                 for r in reminders:
-                    # CORREÇÃO DE TIMEZONE APLICADA
-                    due_time_brt = r.due_date.astimezone(TZ_SAO_PAULO)
-                    hora_formatada = due_time_brt.strftime('%H:%M')
-                    message += f"• {r.description} às {hora_formatada} horas.\n"
+                    due_time_brt = r.due_date.astimezone(TZ_SAO_PAULO).strftime('%H:%M')
+                    message += f"• {r.description} às {due_time_brt} horas.\n"
                 message += "\nNão se preocupe, estarei aqui para te lembrar se precisar! 😉"
             
             send_whatsapp_message(sender_number, message)
+
+        elif action == "create_category":
+            category_name = dify_result.get("category_name")
+            if category_name:
+                create_user_category(db, user, category_name)
+                send_whatsapp_message(sender_number, f"✅ Categoria '{category_name}' criada com sucesso!")
+            else:
+                send_whatsapp_message(sender_number, "🤔 Não consegui identificar o nome da categoria.")
+
+        elif action == "list_categories":
+            categories = get_user_categories(db, user)
+            message = "📋 *Suas Categorias:*\n\n"
+            for cat in categories:
+                message += f"• {cat}\n"
+            send_whatsapp_message(sender_number, message)
+
+        elif action == "delete_category":
+            category_name = dify_result.get("category_name")
+            if category_name:
+                if delete_user_category(db, user, category_name):
+                    send_whatsapp_message(sender_number, f"🗑️ Categoria '{category_name}' apagada com sucesso.")
+                else:
+                    send_whatsapp_message(sender_number, f"🤔 Não encontrei a categoria '{category_name}'.")
+            else:
+                send_whatsapp_message(sender_number, "🤔 Não consegui identificar o nome da categoria para apagar.")
 
         elif action == "delete_last_expense":
             deleted_expense = delete_last_expense(db, user=user)
@@ -696,10 +750,8 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
     for reminder in due_reminders:
         try:
             logging.info(f"Enviando lembrete para {reminder.user.phone_number}: {reminder.description}")
-            # CORREÇÃO DE TIMEZONE APLICADA
-            due_time_brt = reminder.due_date.astimezone(TZ_SAO_PAULO)
-            hora_formatada = due_time_brt.strftime('%H:%M')
-            message = f"⏰ Lembrete: {reminder.description} às {hora_formatada}hrs."
+            due_time_brt = reminder.due_date.astimezone(TZ_SAO_PAULO).strftime('%H:%M')
+            message = f"⏰ Lembrete: {reminder.description} às {due_time_brt}hrs."
             send_whatsapp_message(reminder.user.phone_number, message)
             
             reminder.is_sent = 'true'
@@ -710,7 +762,7 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
 
 
 # ==============================================================================
-# ||                       APLICAÇÃO FASTAPI (ROTAS)                        ||
+# ||                               APLICAÇÃO FASTAPI (ROTAS)                               ||
 # ==============================================================================
 
 app = FastAPI()
@@ -871,9 +923,9 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
 
     dify_result = None
     if "conversation" in message and message["conversation"]:
-        dify_result = process_text_message(message["conversation"], sender_number)
+        dify_result = process_text_message(message["conversation"], sender_number, db)
     elif "audioMessage" in message:
-        dify_result = process_audio_message(message, sender_number)
+        dify_result = process_audio_message(message, sender_number, db)
     elif "imageMessage" in message:
         dify_result = process_image_message(message, sender_number)
     else:
