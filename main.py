@@ -586,7 +586,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             try:
-                # CORREÇÃO DE TIMEZONE: Assume que a string do Dify é a hora local e a torna "aware"
                 naive_datetime = datetime.fromisoformat(due_date_str)
                 aware_brt_datetime = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
                 
@@ -596,11 +595,10 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 data_formatada = aware_brt_datetime.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
-                # Fallback caso a data venha em formato inesperado
                 add_reminder(db, user=user, reminder_data=dify_result)
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
-
+        
         elif action == "create_recurring_reminder":
             descricao = dify_result.get('description', 'N/A')
             day_of_month = dify_result.get('day_of_month')
@@ -619,6 +617,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 send_whatsapp_message(sender_number, confirmation)
             except (ValueError, TypeError):
                 send_whatsapp_message(sender_number, f"🤔 O dia '{day_of_month}' não parece ser um dia válido. Por favor, forneça um número de 1 a 31.")
+
 
         elif action == "get_dashboard_link":
             if not DASHBOARD_URL:
