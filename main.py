@@ -1,7 +1,11 @@
 # ==============================================================================
-# ||                      MEU GESTOR - BACKEND PRINCIPAL (com API)                      ||
+# ||                                                                          ||
+# ||           MEU GESTOR - BACKEND PRINCIPAL (com API)                       ||
+# ||                                                                          ||
 # ==============================================================================
-# VERSÃO 12.2: Corrige erro de CORS e 500 Internal Server Error na rota de dados.
+# Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
+# e a nova API para servir dados ao dashboard.
+# VERSÃO 12: Adiciona funcionalidade de categorias personalizadas ao backup do usuário.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -23,13 +27,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import (create_engine, Column, Integer, String, Numeric,
-                        DateTime, ForeignKey, func, and_, Boolean)
+                        DateTime, ForeignKey, func, and_)
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                      CONFIGURAÇÃO E INICIALIZAÇÃO                      ||
+# ||                                                                          ||
+# ||                   CONFIGURAÇÃO E INICIALIZAÇÃO                           ||
+# ||                                                                          ||
 # ==============================================================================
 
 # Carrega variáveis de ambiente do arquivo .env
@@ -75,7 +81,9 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||                   MODELOS DO BANCO DE DADOS (SQLALCHEMY)                   ||
+# ||                                                                          ||
+# ||               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                     ||
+# ||                                                                          ||
 # ==============================================================================
 class User(Base):
     """Modelo da tabela de usuários."""
@@ -111,23 +119,13 @@ class Income(Base):
     user = relationship("User", back_populates="incomes")
 
 class Reminder(Base):
-    """Modelo da tabela de lembretes, agora com suporte a recorrência."""
+    """Modelo da tabela de lembretes."""
     __tablename__ = "reminders"
     id = Column(Integer, primary_key=True, index=True)
     description = Column(String, nullable=False)
+    due_date = Column(DateTime(timezone=True), nullable=False)
+    is_sent = Column(String, default='false')
     user_id = Column(Integer, ForeignKey("users.id"))
-    
-    # --- Campos para lembretes PONTUAIS ---
-    due_date = Column(DateTime(timezone=True), nullable=True) # Data e hora exata
-    is_sent = Column(Boolean, default=False) # Se a notificação pontual foi enviada
-    
-    # --- Campos para lembretes RECORRENTES ---
-    is_recurring = Column(Boolean, default=False)
-    day_of_month = Column(Integer, nullable=True) # Dia do vencimento (ex: 10)
-    notification_day_offset = Column(Integer, default=5) # Dias de antecedência para notificar
-    last_triggered_month = Column(Integer, nullable=True) # Mês do último disparo para evitar duplicatas
-    last_triggered_year = Column(Integer, nullable=True) # Ano do último disparo
-    
     user = relationship("User", back_populates="reminders")
 
 class AuthToken(Base):
@@ -170,16 +168,6 @@ class ReminderUpdate(BaseModel):
     description: str
     due_date: str # Receber como string ISO e converter
 
-class RecurringReminderCreate(BaseModel):
-    description: str
-    day_of_month: int
-    notification_day_offset: Optional[int] = 5
-
-class RecurringReminderUpdate(BaseModel):
-    description: str
-    day_of_month: int
-    notification_day_offset: int
-
 def get_db():
     """Função de dependência do FastAPI para obter uma sessão de DB."""
     db = SessionLocal()
@@ -190,7 +178,9 @@ def get_db():
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
+# ||                                                                          ||
+# ||                 FUNÇÕES DE LÓGICA DE BANCO DE DADOS                      ||
+# ||                                                                          ||
 # ==============================================================================
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
@@ -235,24 +225,11 @@ def add_income(db: Session, user: User, income_data: dict):
     db.commit()
 
 def add_reminder(db: Session, user: User, reminder_data: dict):
-    """Adiciona um novo lembrete PONTUAL para um usuário no banco de dados."""
+    """Adiciona um novo lembrete para um usuário no banco de dados."""
     new_reminder = Reminder(
         description=reminder_data.get("description"),
         due_date=reminder_data.get("due_date"),
-        user_id=user.id,
-        is_recurring=False
-    )
-    db.add(new_reminder)
-    db.commit()
-
-def add_recurring_reminder(db: Session, user: User, reminder_data: dict):
-    """Adiciona um novo lembrete RECORRENTE para um usuário no banco de dados."""
-    new_reminder = Reminder(
-        description=reminder_data.get("description"),
-        day_of_month=reminder_data.get("day_of_month"),
-        notification_day_offset=reminder_data.get("notification_day_offset", 5),
-        user_id=user.id,
-        is_recurring=True
+        user_id=user.id
     )
     db.add(new_reminder)
     db.commit()
@@ -316,12 +293,10 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
         end_brt = start_of_today_brt + timedelta(days=1)
     
     if start_brt and end_brt:
-        start_utc = start_brt.astimezone(TZ_UTC)
-        end_utc = end_brt.astimezone(TZ_UTC)
         query = db.query(Expense).filter(
             Expense.user_id == user.id,
-            Expense.transaction_date >= start_utc,
-            Expense.transaction_date < end_utc
+            Expense.transaction_date >= start_brt,
+            Expense.transaction_date < end_brt
         )
         if category:
             query = query.filter(func.lower(Expense.category) == func.lower(category))
@@ -359,12 +334,10 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
         end_brt = start_of_today_brt + timedelta(days=1)
 
     if start_brt and end_brt:
-        start_utc = start_brt.astimezone(TZ_UTC)
-        end_utc = end_brt.astimezone(TZ_UTC)
         query = db.query(Income).filter(
             Income.user_id == user.id,
-            Income.transaction_date >= start_utc,
-            Income.transaction_date < end_utc
+            Income.transaction_date >= start_brt,
+            Income.transaction_date < end_brt
         )
             
         incomes = query.order_by(Income.transaction_date.asc()).all()
@@ -374,7 +347,7 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     return None, 0.0
 
 def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List[Reminder], Optional[datetime], Optional[datetime]]:
-    """Busca lembretes PONTUAIS para um determinado período."""
+    """Busca lembretes para um determinado período."""
     now_brt = datetime.now(TZ_SAO_PAULO)
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     
@@ -398,13 +371,10 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
             return [], None, None
     
     if start_brt and end_brt:
-        start_utc = start_brt.astimezone(TZ_UTC)
-        end_utc = end_brt.astimezone(TZ_UTC)
         reminders = db.query(Reminder).filter(
             Reminder.user_id == user.id,
-            Reminder.is_recurring == False,
-            Reminder.due_date >= start_utc,
-            Reminder.due_date < end_utc
+            Reminder.due_date >= start_brt,
+            Reminder.due_date < end_brt
         ).order_by(Reminder.due_date.asc()).all()
         return reminders, start_brt, end_brt
     
@@ -432,7 +402,9 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                 ||
+# ||                                                                          ||
+# ||           FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                       ||
+# ||                                                                          ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -486,7 +458,9 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                         LÓGICA DE PROCESSAMENTO                        ||
+# ||                                                                          ||
+# ||                       LÓGICA DE PROCESSAMENTO                            ||
+# ||                                                                          ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
@@ -587,37 +561,17 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             due_date_str = dify_result.get('due_date')
             try:
                 naive_datetime = datetime.fromisoformat(due_date_str)
-                aware_brt_datetime = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
+                aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
                 
-                dify_result['due_date'] = aware_brt_datetime
+                dify_result['due_date'] = aware_datetime_brt
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
-                data_formatada = aware_brt_datetime.strftime('%d/%m/%Y às %H:%M')
+                data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             except (ValueError, TypeError):
                 add_reminder(db, user=user, reminder_data=dify_result)
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
-        
-        elif action == "create_recurring_reminder":
-            descricao = dify_result.get('description', 'N/A')
-            day_of_month = dify_result.get('day_of_month')
-            
-            if not descricao or not day_of_month:
-                send_whatsapp_message(sender_number, "🤔 Não consegui entender os detalhes do lembrete recorrente. Tente algo como 'lembrete recorrente de aluguel todo dia 5'.")
-                return
-
-            try:
-                day_of_month = int(day_of_month)
-                if not 1 <= day_of_month <= 31:
-                    raise ValueError("Dia do mês inválido")
-
-                add_recurring_reminder(db, user=user, reminder_data={"description": descricao, "day_of_month": day_of_month})
-                confirmation = f"🔁 Lembrete recorrente criado: '{descricao}', todo dia {day_of_month}."
-                send_whatsapp_message(sender_number, confirmation)
-            except (ValueError, TypeError):
-                send_whatsapp_message(sender_number, f"🤔 O dia '{day_of_month}' não parece ser um dia válido. Por favor, forneça um número de 1 a 31.")
-
 
         elif action == "get_dashboard_link":
             if not DASHBOARD_URL:
@@ -701,6 +655,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         
         elif action == "get_reminders":
             period = dify_result.get("period", "hoje")
+            
             reminders, start_date, _ = get_reminders_for_period(db, user, period)
 
             if not start_date:
@@ -775,98 +730,75 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         logging.error(f"Erro ao manusear a ação '{action}': {e}")
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
-def check_and_send_reminders(db: Session):
-    """Verifica lembretes pendentes (pontuais e recorrentes) e envia notificações."""
+# --- FUNÇÃO PARA VERIFICAR E ENVIAR LEMBRETES ---
+def check_and_send_reminders(db: Session = Depends(get_db)):
+    """Verifica lembretes pendentes e envia notificações via WhatsApp."""
     now_utc = datetime.now(TZ_UTC)
-    now_brt = now_utc.astimezone(TZ_SAO_PAULO)
-    logging.info(f"CRON: Verificando lembretes em {now_utc.isoformat()}")
+    logging.info(f"Verificando lembretes pendentes em {now_utc.isoformat()}")
 
-    # --- 1. Processar Lembretes Pontuais ---
     due_reminders = db.query(Reminder).filter(
-        Reminder.is_recurring == False,
         Reminder.due_date <= now_utc,
-        Reminder.is_sent == False
+        Reminder.is_sent == 'false'
     ).all()
 
     for reminder in due_reminders:
         try:
-            logging.info(f"Enviando lembrete PONTUAL para {reminder.user.phone_number}: {reminder.description}")
+            logging.info(f"Enviando lembrete para {reminder.user.phone_number}: {reminder.description}")
             due_time_brt = reminder.due_date.astimezone(TZ_SAO_PAULO).strftime('%H:%M')
             message = f"⏰ Lembrete: {reminder.description} às {due_time_brt}hrs."
             send_whatsapp_message(reminder.user.phone_number, message)
-            reminder.is_sent = True
+            
+            reminder.is_sent = 'true'
             db.commit()
         except Exception as e:
-            logging.error(f"Falha ao enviar lembrete PONTUAL ID {reminder.id}: {e}")
-            db.rollback()
-
-    # --- 2. Processar Lembretes Recorrentes ---
-    today_day = now_brt.day
-    current_month = now_brt.month
-    current_year = now_brt.year
-
-    recurring_reminders_to_check = db.query(Reminder).filter(Reminder.is_recurring == True).all()
-
-    for reminder in recurring_reminders_to_check:
-        try:
-            trigger_day = reminder.day_of_month - reminder.notification_day_offset
-            if trigger_day < 1: trigger_day = 1
-            
-            if (today_day == trigger_day and 
-               not (reminder.last_triggered_year == current_year and reminder.last_triggered_month == current_month)):
-
-                logging.info(f"Enviando lembrete RECORRENTE para {reminder.user.phone_number}: {reminder.description}")
-                message = (f"Olá! Passando para lembrar sobre sua conta de '{reminder.description}', "
-                           f"que geralmente vence no dia {reminder.day_of_month}.\n\n"
-                           f"Quando pagar, é só me responder com o valor (ex: *paguei {reminder.description.lower()} 152,80*) que eu registro pra você. 😉")
-                
-                send_whatsapp_message(reminder.user.phone_number, message)
-                
-                reminder.last_triggered_year = current_year
-                reminder.last_triggered_month = current_month
-                db.commit()
-        except Exception as e:
-            logging.error(f"Falha ao enviar lembrete RECORRENTE ID {reminder.id}: {e}")
+            logging.error(f"Falha ao enviar lembrete ID {reminder.id}: {e}")
             db.rollback()
 
 
 # ==============================================================================
-# ||                       APLICAÇÃO FASTAPI (ROTAS)                        ||
+# ||                                                                          ||
+# ||                     APLICAÇÃO FASTAPI (ROTAS)                            ||
+# ||                                                                          ||
 # ==============================================================================
 
 app = FastAPI()
 
+# --- CONFIGURAÇÃO DE CORS (Cross-Origin Resource Sharing) ---
+# Pega a URL do seu dashboard a partir das variáveis de ambiente.
+DASHBOARD_URL_ENV = os.getenv("DASHBOARD_URL")
+
+# Lista de origens que podem fazer requisições para esta API.
 origins = [
+    # Adiciona aqui a URL exata do seu frontend a partir das variáveis de ambiente.
+    DASHBOARD_URL_ENV, 
+    
+    # É uma boa prática adicionar as URLs de desenvolvimento local também.
     "http://localhost",
-    "http://localhost:3000",
-    "https://meu-gestor-dashboard.onrender.com",
+    "http://localhost:3000", # Comum para React/Next.js
+    "http://localhost:5173", # Comum para Vite/Vue/Svelte
 ]
+
+# Filtra a lista para remover entradas vazias (caso DASHBOARD_URL não esteja definida).
+allowed_origins = [origin for origin in origins if origin]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=allowed_origins, # Usa a lista de origens permitidas.
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Permite todos os métodos (GET, POST, PUT, DELETE, etc.).
+    allow_headers=["*"], # Permite todos os cabeçalhos.
 )
 
 @app.get("/")
 def read_root():
     return {"Status": "Meu Gestor Backend está online!"}
 
-def run_check_reminders_task():
-    db = SessionLocal()
-    try:
-        check_and_send_reminders(db)
-    finally:
-        db.close()
-
 @app.get("/trigger/check-reminders/{secret_key}")
-def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks):
+def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     if secret_key != CRON_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Chave secreta inválida.")
     
-    background_tasks.add_task(run_check_reminders_task)
+    background_tasks.add_task(check_and_send_reminders, db=db)
     return {"status": "success", "message": "Verificação de lembretes iniciada."}
 
 
@@ -903,29 +835,11 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
     incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
     categories = get_user_categories(db, user)
-    
-    reminders = db.query(Reminder).filter(
-        Reminder.user_id == user.id, 
-        Reminder.is_recurring == False, 
-        Reminder.is_sent == False
-    ).order_by(Reminder.due_date.asc()).all()
-    
-    recurring_reminders = db.query(Reminder).filter(
-        Reminder.user_id == user.id, 
-        Reminder.is_recurring == True
-    ).order_by(Reminder.day_of_month.asc()).all()
+    reminders = db.query(Reminder).filter(Reminder.user_id == user.id, Reminder.is_sent == 'false').order_by(Reminder.due_date.asc()).all()
     
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
     incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
-    # CORRIGIDO: Adiciona verificação para evitar erro em datas nulas
-    reminders_data = [{"id": r.id, "description": r.description, "due_date": r.due_date.isoformat()} for r in reminders if r.due_date]
-    
-    recurring_reminders_data = [{
-        "id": r.id, 
-        "description": r.description, 
-        "day_of_month": r.day_of_month, 
-        "notification_day_offset": r.notification_day_offset
-    } for r in recurring_reminders]
+    reminders_data = [{"id": r.id, "description": r.description, "due_date": r.due_date.isoformat()} for r in reminders]
     
     return {
         "user_id": user.id,
@@ -933,8 +847,7 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "expenses": expenses_data,
         "incomes": incomes_data,
         "categories": categories,
-        "reminders": reminders_data,
-        "recurring_reminders": recurring_reminders_data
+        "reminders": reminders_data
     }
 
 @app.put("/api/expense/{expense_id}")
@@ -1016,7 +929,7 @@ def delete_category_api(category_id: int, phone_number: str, db: Session = Depen
 @app.put("/api/reminder/{reminder_id}")
 def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_number: str, db: Session = Depends(get_db)):
     user = get_user_from_query(db, phone_number)
-    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id, Reminder.is_recurring == False).first()
+    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id).first()
     if not reminder:
         raise HTTPException(status_code=404, detail="Lembrete não encontrado.")
     
@@ -1024,7 +937,7 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
     try:
         reminder.due_date = datetime.fromisoformat(reminder_data.due_date)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Formato de data inválido. Use o formato ISO 8601.")
+        raise HTTPException(status_code=400, detail="Formato de data inválido.")
     
     db.commit()
     db.refresh(reminder)
@@ -1033,53 +946,13 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
 @app.delete("/api/reminder/{reminder_id}")
 def delete_reminder_api(reminder_id: int, phone_number: str, db: Session = Depends(get_db)):
     user = get_user_from_query(db, phone_number)
-    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id, Reminder.is_recurring == False).first()
+    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id).first()
     if not reminder:
         raise HTTPException(status_code=404, detail="Lembrete não encontrado.")
     
     db.delete(reminder)
     db.commit()
     return {"status": "success", "message": "Lembrete apagado."}
-
-@app.post("/api/recurring-reminders/{phone_number}")
-def create_recurring_reminder_api(phone_number: str, reminder_data: RecurringReminderCreate, db: Session = Depends(get_db)):
-    user = get_user_from_query(db, phone_number)
-    new_reminder = Reminder(
-        description=reminder_data.description,
-        day_of_month=reminder_data.day_of_month,
-        notification_day_offset=reminder_data.notification_day_offset,
-        is_recurring=True,
-        user_id=user.id
-    )
-    db.add(new_reminder)
-    db.commit()
-    db.refresh(new_reminder)
-    return {"id": new_reminder.id, "description": new_reminder.description, "day_of_month": new_reminder.day_of_month, "notification_day_offset": new_reminder.notification_day_offset}
-
-@app.put("/api/recurring-reminder/{reminder_id}")
-def update_recurring_reminder_api(reminder_id: int, reminder_data: RecurringReminderUpdate, phone_number: str, db: Session = Depends(get_db)):
-    user = get_user_from_query(db, phone_number)
-    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id, Reminder.is_recurring == True).first()
-    if not reminder:
-        raise HTTPException(status_code=404, detail="Lembrete recorrente não encontrado.")
-    
-    reminder.description = reminder_data.description
-    reminder.day_of_month = reminder_data.day_of_month
-    reminder.notification_day_offset = reminder_data.notification_day_offset
-    db.commit()
-    db.refresh(reminder)
-    return {"id": reminder.id, "description": reminder.description, "day_of_month": reminder.day_of_month, "notification_day_offset": reminder.notification_day_offset}
-
-@app.delete("/api/recurring-reminder/{reminder_id}")
-def delete_recurring_reminder_api(reminder_id: int, phone_number: str, db: Session = Depends(get_db)):
-    user = get_user_from_query(db, phone_number)
-    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id, Reminder.is_recurring == True).first()
-    if not reminder:
-        raise HTTPException(status_code=404, detail="Lembrete recorrente não encontrado.")
-    
-    db.delete(reminder)
-    db.commit()
-    return {"status": "success", "message": "Lembrete recorrente apagado."}
 
 
 @app.post("/webhook/evolution")
