@@ -5,7 +5,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 18: Adiciona funcionalidade de Planejamento de Contas Mensais.
+# VERSÃO 19: Adiciona automação para marcar contas planejadas como pagas.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -97,7 +97,6 @@ class User(Base):
     reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
     auth_tokens = relationship("AuthToken", back_populates="user")
     categories = relationship("Category", back_populates="user", cascade="all, delete-orphan")
-    # NOVO RELACIONAMENTO
     planned_expenses = relationship("PlannedExpense", back_populates="user", cascade="all, delete-orphan")
 
 
@@ -150,18 +149,16 @@ class Category(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="categories")
 
-# --- NOVO MODELO PARA PLANEJAMENTO ---
 class PlannedExpense(Base):
     """Modelo para contas de planejamento mensal."""
     __tablename__ = "planned_expenses"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     due_day = Column(Integer, nullable=False)
-    statuses = Column(Text, nullable=False, default='{}') # Armazena um JSON string: {"2024-07": "Pago"}
+    statuses = Column(Text, nullable=False, default='{}')
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="planned_expenses")
 
-# Cria as tabelas no banco de dados, se não existirem
 Base.metadata.create_all(bind=engine)
 
 # --- Modelos Pydantic para validação de dados da API ---
@@ -184,7 +181,6 @@ class ReminderUpdate(BaseModel):
     description: str
     due_date: str
 
-# --- NOVOS MODELOS PYDANTIC PARA PLANEJAMENTO ---
 class PlannedExpenseCreate(BaseModel):
     name: str
     dueDay: int
@@ -194,11 +190,10 @@ class PlannedExpenseUpdate(BaseModel):
     dueDay: int
 
 class StatusUpdate(BaseModel):
-    monthKey: str # Formato "YYYY-MM"
-    status: str   # "Pago" ou "Pendente"
+    monthKey: str
+    status: str
 
 def get_db():
-    """Função de dependência do FastAPI para obter uma sessão de DB."""
     db = SessionLocal()
     try:
         yield db
@@ -213,7 +208,6 @@ def get_db():
 # ==============================================================================
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
-    """Busca um usuário pelo número de telefone ou cria um novo se não existir."""
     user = db.query(User).filter(User.phone_number == phone_number).first()
     if not user:
         logging.info(f"Criando novo usuário para o número: {phone_number}")
@@ -224,7 +218,6 @@ def get_or_create_user(db: Session, phone_number: str) -> User:
     return user
 
 def create_auth_token(db: Session, user: User) -> str:
-    """Cria e armazena um token de autenticação temporário para um usuário."""
     token_str = secrets.token_urlsafe(16)
     expires = datetime.now(TZ_UTC) + timedelta(minutes=5)
     token = AuthToken(token=token_str, user_id=user.id, expires_at=expires)
@@ -233,7 +226,6 @@ def create_auth_token(db: Session, user: User) -> str:
     return token_str
 
 def add_expense(db: Session, user: User, expense_data: dict):
-    """Adiciona uma nova despesa para um usuário no banco de dados."""
     new_expense = Expense(
         description=expense_data.get("description"),
         value=expense_data.get("value"),
@@ -244,7 +236,6 @@ def add_expense(db: Session, user: User, expense_data: dict):
     db.commit()
 
 def add_income(db: Session, user: User, income_data: dict):
-    """Adiciona uma nova renda para um usuário no banco de dados."""
     new_income = Income(
         description=income_data.get("description"),
         value=income_data.get("value"),
@@ -254,7 +245,6 @@ def add_income(db: Session, user: User, income_data: dict):
     db.commit()
 
 def add_reminder(db: Session, user: User, reminder_data: dict):
-    """Adiciona um novo lembrete para um usuário no banco de dados."""
     new_reminder = Reminder(
         description=reminder_data.get("description"),
         due_date=reminder_data.get("due_date"),
@@ -264,20 +254,17 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
     db.add(new_reminder)
     db.commit()
 
-# --- NOVA FUNÇÃO PARA ADICIONAR CONTA PLANEJADA (VIA WHATSAPP) ---
 def add_planned_expense(db: Session, user: User, planned_expense_data: dict):
-    """Adiciona uma nova conta planejada para um usuário."""
     new_planned_expense = PlannedExpense(
         name=planned_expense_data.get("name"),
         due_day=planned_expense_data.get("due_day"),
         user_id=user.id,
-        statuses='{}' # Inicia com um JSON vazio
+        statuses='{}'
     )
     db.add(new_planned_expense)
     db.commit()
 
 def get_user_categories(db: Session, user: User) -> List[dict]:
-    """Busca todas as categorias de um usuário (padrão e personalizadas)."""
     default_categories = [
         {"id": f"default_{i}", "name": name, "is_default": True}
         for i, name in enumerate(["Alimentação", "Transporte", "Moradia", "Lazer", "Saúde", "Educação", "Outros"])
@@ -289,7 +276,6 @@ def get_user_categories(db: Session, user: User) -> List[dict]:
     return custom_categories + default_categories
 
 def create_user_category(db: Session, user: User, category_name: str) -> Category:
-    """Cria uma nova categoria para um usuário."""
     new_category = Category(name=category_name, user_id=user.id)
     db.add(new_category)
     db.commit()
@@ -297,7 +283,6 @@ def create_user_category(db: Session, user: User, category_name: str) -> Categor
     return new_category
 
 def delete_user_category(db: Session, user: User, category_name: str) -> bool:
-    """Apaga uma categoria personalizada de um usuário."""
     category_to_delete = db.query(Category).filter(
         func.lower(Category.name) == func.lower(category_name),
         Category.user_id == user.id
@@ -309,7 +294,6 @@ def delete_user_category(db: Session, user: User, category_name: str) -> bool:
     return False
 
 def get_expenses_summary(db: Session, user: User, period: str, category: str = None) -> Tuple[List[Expense], float, datetime, datetime] | None:
-    """Busca a lista de despesas, o valor total e o intervalo de datas para um período."""
     now_brt = datetime.now(TZ_SAO_PAULO)
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     
@@ -350,7 +334,6 @@ def get_expenses_summary(db: Session, user: User, period: str, category: str = N
     return None, 0.0, None, None
 
 def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Income], float] | None:
-    """Busca a lista de rendas e o valor total para um determinado período."""
     now_brt = datetime.now(TZ_SAO_PAULO)
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -389,7 +372,6 @@ def get_incomes_summary(db: Session, user: User, period: str) -> Tuple[List[Inco
     return None, 0.0
 
 def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List[Reminder], Optional[datetime], Optional[datetime]]:
-    """Busca lembretes para um determinado período."""
     now_brt = datetime.now(TZ_SAO_PAULO)
     start_of_today_brt = now_brt.replace(hour=0, minute=0, second=0, microsecond=0)
     
@@ -423,7 +405,6 @@ def get_reminders_for_period(db: Session, user: User, period: str) -> Tuple[List
     return [], None, None
 
 def delete_last_expense(db: Session, user: User) -> dict | None:
-    """Encontra e apaga a última despesa registrada por um usuário."""
     last_expense = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.id.desc()).first()
     if last_expense:
         deleted_details = {"description": last_expense.description, "value": float(last_expense.value)}
@@ -433,7 +414,6 @@ def delete_last_expense(db: Session, user: User) -> dict | None:
     return None
 
 def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expense | None:
-    """Encontra e edita o valor da última despesa registrada por um usuário."""
     last_expense = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.id.desc()).first()
     if last_expense:
         last_expense.value = new_value
@@ -450,7 +430,6 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
-    """Transcreve um arquivo de áudio usando a API da OpenAI (Whisper)."""
     try:
         with open(file_path, "rb") as audio_file:
             transcription = openai.Audio.transcribe("whisper-1", audio_file)
@@ -461,7 +440,6 @@ def transcribe_audio(file_path: str) -> str | None:
         return None
 
 def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) -> dict | None:
-    """Envia uma consulta para o agente Dify, incluindo um file_id se fornecido."""
     headers = {"Authorization": DIFY_API_KEY, "Content-Type": "application/json"}
     payload = {
         "inputs": {},
@@ -478,19 +456,15 @@ def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) 
         response.raise_for_status()
         answer_str = response.json().get("answer", "")
         try:
-            # Tenta carregar a resposta como JSON
             return json.loads(answer_str)
         except json.JSONDecodeError:
-            # Se falhar, é uma resposta de texto puro
             logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'.")
-            # Encapsula em um dicionário para manter a consistência do fluxo
             return {"action": "not_understood", "raw_response": answer_str}
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro na chamada à API do Dify: {e.response.text if e.response else e}")
         return None
 
 def send_whatsapp_message(phone_number: str, message: str):
-    """Envia uma mensagem de texto via Evolution API."""
     url = f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE_NAME}"
     headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
     clean_number = phone_number.split('@')[0]
@@ -509,12 +483,10 @@ def send_whatsapp_message(phone_number: str, message: str):
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
-    """Processa uma mensagem de texto chamando a API do Dify."""
     logging.info(f">>> PROCESSANDO TEXTO: [{sender_number}]")
     dify_user_id = re.sub(r'\D', '', sender_number)
     user = get_or_create_user(db, sender_number)
     
-    # Enriquecimento de contexto para despesas
     if any(keyword in message_text.lower() for keyword in ["gastei", "comprei", "paguei", "despesa"]):
         user_categories = [c['name'] for c in get_user_categories(db, user)]
         category_list_str = ", ".join(user_categories)
@@ -524,7 +496,6 @@ def process_text_message(message_text: str, sender_number: str, db: Session) -> 
     return call_dify_api(user_id=dify_user_id, text_query=message_text)
 
 def process_audio_message(message: dict, sender_number: str, db: Session) -> dict | None:
-    """Processa uma mensagem de áudio: baixa, converte, transcreve e envia para o Dify."""
     logging.info(f">>> PROCESSANDO ÁUDIO de [{sender_number}]")
     media_url = message.get("url") or message.get("mediaUrl")
     if not media_url:
@@ -550,7 +521,6 @@ def process_audio_message(message: dict, sender_number: str, db: Session) -> dic
         if os.path.exists(mp3_file_path): os.remove(mp3_file_path)
 
 def process_image_message(message: dict, sender_number: str) -> dict | None:
-    """Processa uma mensagem de imagem: baixa, envia para o Dify files e depois para o chat."""
     logging.info(f">>> PROCESSANDO IMAGEM de [{sender_number}]")
     media_url = message.get("mediaUrl") or message.get("url")
     if not media_url:
@@ -583,17 +553,46 @@ def process_image_message(message: dict, sender_number: str) -> dict | None:
         return None
 
 def handle_dify_action(dify_result: dict, user: User, db: Session):
-    """Executa a lógica apropriada baseada na ação retornada pelo Dify."""
     action = dify_result.get("action")
     sender_number = user.phone_number
     
     try:
         if action == "register_expense":
+            # 1. Registra a despesa normalmente
             add_expense(db, user=user, expense_data=dify_result)
             valor = float(dify_result.get('value', 0))
             descricao = dify_result.get('description', 'N/A')
             confirmation = f"✅ Despesa de R$ {valor:.2f} ({descricao}) registrada com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
+
+            # --- NOVA LÓGICA DE AUTOMAÇÃO DE PAGAMENTO ---
+            # 2. Verifica se a despesa corresponde a uma conta planejada
+            try:
+                expense_description = descricao.lower()
+                user_planned_expenses = db.query(PlannedExpense).filter(PlannedExpense.user_id == user.id).all()
+                
+                for planned_item in user_planned_expenses:
+                    # Verifica se o nome da conta planejada está na descrição da despesa
+                    if planned_item.name.lower() in expense_description:
+                        logging.info(f"Despesa '{expense_description}' corresponde à conta planejada '{planned_item.name}'.")
+                        
+                        # Define a chave do mês atual (ex: "2025-07")
+                        month_key = datetime.now(TZ_SAO_PAULO).strftime('%Y-%m')
+                        
+                        # Carrega, atualiza e salva os status
+                        statuses = json.loads(planned_item.statuses) if planned_item.statuses else {}
+                        
+                        # Só atualiza se o status for diferente de "Pago" para evitar logs desnecessários
+                        if statuses.get(month_key) != "Pago":
+                            statuses[month_key] = "Pago"
+                            planned_item.statuses = json.dumps(statuses)
+                            db.commit()
+                            logging.info(f"Status da conta '{planned_item.name}' para o mês {month_key} atualizado para 'Pago'.")
+                        
+                        break # Para após encontrar a primeira correspondência
+            except Exception as auto_payment_error:
+                logging.error(f"Erro na automação de pagamento de conta planejada: {auto_payment_error}")
+                # Não interrompe o fluxo principal, a despesa já foi registrada.
 
         elif action == "register_income":
             add_income(db, user=user, income_data=dify_result)
@@ -623,7 +622,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
 
-        # --- NOVA AÇÃO PARA PLANEJAMENTO VIA WHATSAPP ---
         elif action == "add_planned_expense":
             name = dify_result.get("name")
             due_day = dify_result.get("due_day")
@@ -783,7 +781,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             else:
                 send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para editar.")
 
-        else: # "not_understood" ou qualquer outra ação
+        else:
             fallback_message = dify_result.get("raw_response", "Não entendi. Tente de novo. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário', 'resumo do mês'.")
             send_whatsapp_message(sender_number, fallback_message)
 
@@ -794,7 +792,6 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 # --- FUNÇÕES PARA LEMBRETES RECORRENTES ---
 
 def generate_monthly_reminders(db: Session):
-    """Gera lembretes para o próximo mês com base nos modelos recorrentes."""
     logging.info("Iniciando a geração de lembretes mensais recorrentes.")
     now_utc = datetime.now(TZ_UTC)
     
@@ -842,7 +839,6 @@ def generate_monthly_reminders(db: Session):
 
 
 def check_and_send_reminders(db: Session):
-    """Verifica lembretes pendentes e envia notificações via WhatsApp."""
     now_utc = datetime.now(TZ_UTC)
     logging.info(f"Verificando lembretes pendentes em {now_utc.isoformat()}")
 
@@ -883,7 +879,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "18.0_PLANEJAMENTO"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "19.0_AUTO_PAGAMENTO"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -935,14 +931,12 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         Reminder.recurrence == None
     ).order_by(Reminder.due_date.asc()).all()
     
-    # NOVO: Busca de contas planejadas
     planned_expenses = db.query(PlannedExpense).filter(PlannedExpense.user_id == user.id).order_by(PlannedExpense.name).all()
     
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
     incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
     reminders_data = [{"id": r.id, "description": r.description, "due_date": r.due_date.isoformat()} for r in reminders]
     
-    # NOVO: Formatação dos dados de planejamento
     planned_expenses_data = [{
         "id": p.id,
         "name": p.name,
@@ -957,7 +951,7 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "incomes": incomes_data,
         "categories": categories,
         "reminders": reminders_data,
-        "planned_expenses": planned_expenses_data # NOVO CAMPO NA RESPOSTA
+        "planned_expenses": planned_expenses_data
     }
 
 @app.put("/api/expense/{expense_id}")
@@ -985,7 +979,6 @@ def delete_expense(expense_id: int, phone_number: str, db: Session = Depends(get
     db.commit()
     return {"status": "success", "message": "Despesa apagada."}
 
-# ... (rotas de income, category, reminder permanecem as mesmas) ...
 @app.put("/api/income/{income_id}")
 def update_income(income_id: int, income_data: IncomeUpdate, phone_number: str, db: Session = Depends(get_db)):
     user = get_user_from_query(db, phone_number)
@@ -1065,7 +1058,8 @@ def delete_reminder_api(reminder_id: int, phone_number: str, db: Session = Depen
     db.commit()
     return {"status": "success", "message": "Lembrete apagado."}
 
-# --- NOVAS ROTAS DA API PARA PLANEJAMENTO ---
+
+# --- ROTAS DA API PARA PLANEJAMENTO ---
 
 @app.post("/api/planning/{phone_number}")
 def create_planned_expense(phone_number: str, expense_data: PlannedExpenseCreate, db: Session = Depends(get_db)):
@@ -1112,7 +1106,6 @@ def update_planned_expense_status(expense_id: int, status_data: StatusUpdate, ph
     if not expense:
         raise HTTPException(status_code=404, detail="Conta planejada não encontrada.")
     
-    # Carrega o JSON de status, atualiza e salva de volta
     statuses = json.loads(expense.statuses) if expense.statuses else {}
     statuses[status_data.monthKey] = status_data.status
     expense.statuses = json.dumps(statuses)
@@ -1123,7 +1116,6 @@ def update_planned_expense_status(expense_id: int, status_data: StatusUpdate, ph
 
 @app.post("/webhook/evolution")
 async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
-    """Rota principal que recebe os webhooks da Evolution API."""
     data = await request.json()
     logging.info(f"DADOS RECEBIDOS: {json.dumps(data, indent=2)}")
 
@@ -1159,7 +1151,6 @@ async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
     return {"status": "processado"}
 
 
-# Permite rodar o servidor com `python main.py` para desenvolvimento local
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
