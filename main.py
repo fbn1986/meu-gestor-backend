@@ -5,7 +5,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 16: Reverte para a configuração de CORS do backup original.
+# VERSÃO 17: Adiciona funcionalidade de lembretes recorrentes mensais.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -16,6 +16,7 @@ import secrets
 from datetime import datetime, date, timedelta, time
 from zoneinfo import ZoneInfo
 from typing import List, Tuple, Optional
+from dateutil.relativedelta import relativedelta # Adicionada para cálculos de data
 
 # Terceiros
 import requests
@@ -127,6 +128,8 @@ class Reminder(Base):
     is_sent = Column(String, default='false')
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="reminders")
+    # Novo campo para recorrência
+    recurrence = Column(String, nullable=True) # Ex: 'monthly'
 
 class AuthToken(Base):
     """Modelo para tokens de autenticação temporários."""
@@ -146,6 +149,7 @@ class Category(Base):
     user = relationship("User", back_populates="categories")
 
 # Cria as tabelas no banco de dados, se não existirem
+# O SQLAlchemy tentará adicionar a nova coluna 'recurrence' se ela não existir.
 Base.metadata.create_all(bind=engine)
 
 # --- Modelos Pydantic para validação de dados da API ---
@@ -229,6 +233,7 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
     new_reminder = Reminder(
         description=reminder_data.get("description"),
         due_date=reminder_data.get("due_date"),
+        recurrence=reminder_data.get("recurrence"), # Salva o tipo de recorrência
         user_id=user.id
     )
     db.add(new_reminder)
@@ -559,6 +564,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         elif action == "create_reminder":
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
+            recurrence = dify_result.get('recurrence') # Captura o novo campo
             try:
                 naive_datetime = datetime.fromisoformat(due_date_str)
                 aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
@@ -568,6 +574,9 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 
                 data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
+                if recurrence == 'monthly':
+                    confirmation += " Este lembrete se repetirá mensalmente."
+
             except (ValueError, TypeError):
                 add_reminder(db, user=user, reminder_data=dify_result)
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
@@ -730,8 +739,64 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         logging.error(f"Erro ao manusear a ação '{action}': {e}")
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
-# --- FUNÇÃO PARA VERIFICAR E ENVIAR LEMBRETES ---
-def check_and_send_reminders(db: Session = Depends(get_db)):
+# --- FUNÇÕES PARA LEMBRETES RECORRENTES ---
+
+def generate_monthly_reminders(db: Session):
+    """Gera lembretes para o próximo mês com base nos modelos recorrentes."""
+    logging.info("Iniciando a geração de lembretes mensais recorrentes.")
+    now_utc = datetime.now(TZ_UTC)
+    
+    # Busca todos os "modelos" de lembretes mensais
+    recurring_templates = db.query(Reminder).filter(Reminder.recurrence == 'monthly').all()
+
+    for template in recurring_templates:
+        try:
+            # Calcula a data de vencimento para o próximo mês
+            next_due_date = template.due_date + relativedelta(months=1)
+
+            # Garante que a data de vencimento calculada está no futuro
+            if next_due_date < now_utc:
+                # Se o próximo vencimento calculado ainda está no passado, avança para o próximo mês a partir de hoje
+                next_due_date = now_utc.replace(day=template.due_date.day, hour=template.due_date.hour, minute=template.due_date.minute)
+                if next_due_date < now_utc:
+                     next_due_date += relativedelta(months=1)
+
+            # Define o início e o fim do dia do vencimento para a verificação
+            start_of_day = next_due_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day = start_of_day + timedelta(days=1)
+
+            # Verifica se já existe um lembrete para esta descrição neste dia
+            exists = db.query(Reminder).filter(
+                Reminder.user_id == template.user_id,
+                Reminder.description == template.description,
+                Reminder.due_date >= start_of_day,
+                Reminder.due_date < end_of_day,
+                Reminder.recurrence == None # Procura por lembretes não-recorrentes
+            ).first()
+
+            if not exists:
+                logging.info(f"Gerando novo lembrete para '{template.description}' em {next_due_date.strftime('%Y-%m-%d')}")
+                new_instance = Reminder(
+                    user_id=template.user_id,
+                    description=template.description,
+                    due_date=next_due_date,
+                    is_sent='false',
+                    recurrence=None # A instância gerada não é recorrente
+                )
+                db.add(new_instance)
+                
+                # Atualiza a data do modelo para o próximo mês, para a próxima geração
+                template.due_date = next_due_date
+        except Exception as e:
+            logging.error(f"Erro ao gerar lembrete recorrente para o template ID {template.id}: {e}")
+            db.rollback() # Desfaz em caso de erro para este template
+            continue # Continua para o próximo
+    
+    db.commit() # Salva todas as alterações no final
+    logging.info("Geração de lembretes mensais concluída.")
+
+
+def check_and_send_reminders(db: Session):
     """Verifica lembretes pendentes e envia notificações via WhatsApp."""
     now_utc = datetime.now(TZ_UTC)
     logging.info(f"Verificando lembretes pendentes em {now_utc.isoformat()}")
@@ -775,16 +840,18 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    # Esta mensagem foi alterada para podermos verificar se o deploy foi bem-sucedido.
-    return {"Status": "Meu Gestor Backend está online!", "Version": "BACKUP_FIX_16"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "BACKUP_FIX_17_RECURRING"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     if secret_key != CRON_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Chave secreta inválida.")
     
+    # Adiciona as duas tarefas ao background
+    background_tasks.add_task(generate_monthly_reminders, db=db)
     background_tasks.add_task(check_and_send_reminders, db=db)
-    return {"status": "success", "message": "Verificação de lembretes iniciada."}
+    
+    return {"status": "success", "message": "Verificação e geração de lembretes iniciada."}
 
 
 @app.get("/api/verify-token/{token}")
@@ -820,7 +887,11 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
     incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
     categories = get_user_categories(db, user)
-    reminders = db.query(Reminder).filter(Reminder.user_id == user.id, Reminder.is_sent == 'false').order_by(Reminder.due_date.asc()).all()
+    reminders = db.query(Reminder).filter(
+        Reminder.user_id == user.id, 
+        Reminder.is_sent == 'false',
+        Reminder.recurrence == None # Mostra apenas lembretes concretos, não os modelos
+    ).order_by(Reminder.due_date.asc()).all()
     
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
     incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
