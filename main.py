@@ -5,7 +5,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 12: Adiciona funcionalidade de categorias personalizadas ao backup do usuário.
+# VERSÃO 13: Correção definitiva de CORS adicionando a URL do frontend diretamente.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -53,7 +53,7 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")
-DASHBOARD_URL = os.getenv("DASHBOARD_URL")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL") # Mantido por boas práticas, mas não usado para CORS
 CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY")
 
 # --- Constantes de Fuso Horário ---
@@ -764,29 +764,21 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
 app = FastAPI()
 
 # --- CONFIGURAÇÃO DE CORS (Cross-Origin Resource Sharing) ---
-# Pega a URL do seu dashboard a partir das variáveis de ambiente.
-DASHBOARD_URL_ENV = os.getenv("DASHBOARD_URL")
-
 # Lista de origens que podem fazer requisições para esta API.
-origins = [
-    # Adiciona aqui a URL exata do seu frontend a partir das variáveis de ambiente.
-    DASHBOARD_URL_ENV, 
-    
-    # É uma boa prática adicionar as URLs de desenvolvimento local também.
+# A URL do dashboard foi adicionada diretamente para garantir que o CORS funcione.
+allowed_origins = [
+    "https://meu-gestor-dashboard.onrender.com", # URL do frontend
     "http://localhost",
-    "http://localhost:3000", # Comum para React/Next.js
-    "http://localhost:5173", # Comum para Vite/Vue/Svelte
+    "http://localhost:3000",
+    "http://localhost:5173",
 ]
-
-# Filtra a lista para remover entradas vazias (caso DASHBOARD_URL não esteja definida).
-allowed_origins = [origin for origin in origins if origin]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins, # Usa a lista de origens permitidas.
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"], # Permite todos os métodos (GET, POST, PUT, DELETE, etc.).
-    allow_headers=["*"], # Permite todos os cabeçalhos.
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/")
