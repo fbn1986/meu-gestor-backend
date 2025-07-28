@@ -5,7 +5,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 15: Tentativa final de correção de CORS usando regex.
+# VERSÃO 16: Reverte para a configuração de CORS do backup original.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -764,11 +764,10 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
 app = FastAPI()
 
 # --- CONFIGURAÇÃO DE CORS (Cross-Origin Resource Sharing) ---
-# Abordagem final usando uma expressão regular (regex) para ser mais flexível
-# com a forma como o OnRender pode enviar o cabeçalho de origem.
+# Voltando para a configuração original do seu backup, que é mais permissiva.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://meu-gestor-dashboard\.onrender\.com",
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -777,7 +776,7 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     # Esta mensagem foi alterada para podermos verificar se o deploy foi bem-sucedido.
-    return {"Status": "Meu Gestor Backend está online!", "Version": "CORS_FIX_15"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "BACKUP_FIX_16"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -790,7 +789,6 @@ def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Se
 
 @app.get("/api/verify-token/{token}")
 def verify_token(token: str, db: Session = Depends(get_db)):
-    logging.info(f">>> VERIFICANDO TOKEN: {token}") # Log para depuração
     token_obj = db.query(AuthToken).filter(AuthToken.token == token).first()
     if token_obj and token_obj.expires_at > datetime.now(TZ_UTC):
         phone_number = token_obj.user.phone_number.split('@')[0]
