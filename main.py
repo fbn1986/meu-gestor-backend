@@ -1,11 +1,11 @@
 # ==============================================================================
 # ||                                                                          ||
-# ||           MEU GESTOR - BACKEND PRINCIPAL (com API)                       ||
+# ||               MEU GESTOR - BACKEND PRINCIPAL (com API)                   ||
 # ||                                                                          ||
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 17: Adiciona funcionalidade de lembretes recorrentes mensais.
+# VERSÃO 18: Adiciona funcionalidade de Planejamento de Contas Mensais.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -15,8 +15,8 @@ import re
 import secrets
 from datetime import datetime, date, timedelta, time
 from zoneinfo import ZoneInfo
-from typing import List, Tuple, Optional
-from dateutil.relativedelta import relativedelta # Adicionada para cálculos de data
+from typing import List, Tuple, Optional, Dict
+from dateutil.relativedelta import relativedelta
 
 # Terceiros
 import requests
@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import (create_engine, Column, Integer, String, Numeric,
-                        DateTime, ForeignKey, func, and_)
+                        DateTime, ForeignKey, func, and_, Text) # Adicionado Text
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -97,6 +97,9 @@ class User(Base):
     reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
     auth_tokens = relationship("AuthToken", back_populates="user")
     categories = relationship("Category", back_populates="user", cascade="all, delete-orphan")
+    # NOVO RELACIONAMENTO
+    planned_expenses = relationship("PlannedExpense", back_populates="user", cascade="all, delete-orphan")
+
 
 class Expense(Base):
     """Modelo da tabela de despesas."""
@@ -128,8 +131,7 @@ class Reminder(Base):
     is_sent = Column(String, default='false')
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="reminders")
-    # Novo campo para recorrência
-    recurrence = Column(String, nullable=True) # Ex: 'monthly'
+    recurrence = Column(String, nullable=True)
 
 class AuthToken(Base):
     """Modelo para tokens de autenticação temporários."""
@@ -148,8 +150,18 @@ class Category(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="categories")
 
+# --- NOVO MODELO PARA PLANEJAMENTO ---
+class PlannedExpense(Base):
+    """Modelo para contas de planejamento mensal."""
+    __tablename__ = "planned_expenses"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    due_day = Column(Integer, nullable=False)
+    statuses = Column(Text, nullable=False, default='{}') # Armazena um JSON string: {"2024-07": "Pago"}
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="planned_expenses")
+
 # Cria as tabelas no banco de dados, se não existirem
-# O SQLAlchemy tentará adicionar a nova coluna 'recurrence' se ela não existir.
 Base.metadata.create_all(bind=engine)
 
 # --- Modelos Pydantic para validação de dados da API ---
@@ -170,7 +182,20 @@ class CategoryUpdate(BaseModel):
 
 class ReminderUpdate(BaseModel):
     description: str
-    due_date: str # Receber como string ISO e converter
+    due_date: str
+
+# --- NOVOS MODELOS PYDANTIC PARA PLANEJAMENTO ---
+class PlannedExpenseCreate(BaseModel):
+    name: str
+    dueDay: int
+
+class PlannedExpenseUpdate(BaseModel):
+    name: str
+    dueDay: int
+
+class StatusUpdate(BaseModel):
+    monthKey: str # Formato "YYYY-MM"
+    status: str   # "Pago" ou "Pendente"
 
 def get_db():
     """Função de dependência do FastAPI para obter uma sessão de DB."""
@@ -183,7 +208,7 @@ def get_db():
 
 # ==============================================================================
 # ||                                                                          ||
-# ||                 FUNÇÕES DE LÓGICA DE BANCO DE DADOS                      ||
+# ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
 # ||                                                                          ||
 # ==============================================================================
 
@@ -233,10 +258,22 @@ def add_reminder(db: Session, user: User, reminder_data: dict):
     new_reminder = Reminder(
         description=reminder_data.get("description"),
         due_date=reminder_data.get("due_date"),
-        recurrence=reminder_data.get("recurrence"), # Salva o tipo de recorrência
+        recurrence=reminder_data.get("recurrence"),
         user_id=user.id
     )
     db.add(new_reminder)
+    db.commit()
+
+# --- NOVA FUNÇÃO PARA ADICIONAR CONTA PLANEJADA (VIA WHATSAPP) ---
+def add_planned_expense(db: Session, user: User, planned_expense_data: dict):
+    """Adiciona uma nova conta planejada para um usuário."""
+    new_planned_expense = PlannedExpense(
+        name=planned_expense_data.get("name"),
+        due_day=planned_expense_data.get("due_day"),
+        user_id=user.id,
+        statuses='{}' # Inicia com um JSON vazio
+    )
+    db.add(new_planned_expense)
     db.commit()
 
 def get_user_categories(db: Session, user: User) -> List[dict]:
@@ -408,7 +445,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 # ==============================================================================
 # ||                                                                          ||
-# ||           FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                       ||
+# ||               FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                   ||
 # ||                                                                          ||
 # ==============================================================================
 
@@ -441,10 +478,13 @@ def call_dify_api(user_id: str, text_query: str, file_id: Optional[str] = None) 
         response.raise_for_status()
         answer_str = response.json().get("answer", "")
         try:
+            # Tenta carregar a resposta como JSON
             return json.loads(answer_str)
         except json.JSONDecodeError:
+            # Se falhar, é uma resposta de texto puro
             logging.warning(f"Dify retornou texto puro em vez de JSON: '{answer_str}'.")
-            return {"action": "not_understood"}
+            # Encapsula em um dicionário para manter a consistência do fluxo
+            return {"action": "not_understood", "raw_response": answer_str}
     except requests.exceptions.RequestException as e:
         logging.error(f"Erro na chamada à API do Dify: {e.response.text if e.response else e}")
         return None
@@ -464,7 +504,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 # ==============================================================================
 # ||                                                                          ||
-# ||                       LÓGICA DE PROCESSAMENTO                            ||
+# ||                         LÓGICA DE PROCESSAMENTO                          ||
 # ||                                                                          ||
 # ==============================================================================
 
@@ -474,6 +514,7 @@ def process_text_message(message_text: str, sender_number: str, db: Session) -> 
     dify_user_id = re.sub(r'\D', '', sender_number)
     user = get_or_create_user(db, sender_number)
     
+    # Enriquecimento de contexto para despesas
     if any(keyword in message_text.lower() for keyword in ["gastei", "comprei", "paguei", "despesa"]):
         user_categories = [c['name'] for c in get_user_categories(db, user)]
         category_list_str = ", ".join(user_categories)
@@ -564,7 +605,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         elif action == "create_reminder":
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
-            recurrence = dify_result.get('recurrence') # Captura o novo campo
+            recurrence = dify_result.get('recurrence')
             try:
                 naive_datetime = datetime.fromisoformat(due_date_str)
                 aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
@@ -581,6 +622,17 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 add_reminder(db, user=user, reminder_data=dify_result)
                 confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
+
+        # --- NOVA AÇÃO PARA PLANEJAMENTO VIA WHATSAPP ---
+        elif action == "add_planned_expense":
+            name = dify_result.get("name")
+            due_day = dify_result.get("due_day")
+            if name and due_day:
+                add_planned_expense(db, user=user, planned_expense_data=dify_result)
+                confirmation = f"📅 Nova conta adicionada ao seu planejamento: '{name}', com vencimento todo dia {due_day}."
+                send_whatsapp_message(sender_number, confirmation)
+            else:
+                send_whatsapp_message(sender_number, "🤔 Não consegui identificar o nome e o dia de vencimento da conta para o planejamento.")
 
         elif action == "get_dashboard_link":
             if not DASHBOARD_URL:
@@ -732,8 +784,8 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 send_whatsapp_message(sender_number, "🤔 Não encontrei nenhuma despesa para editar.")
 
         else: # "not_understood" ou qualquer outra ação
-            fallback = "Não entendi. Tente de novo. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário', 'resumo do mês'."
-            send_whatsapp_message(sender_number, fallback)
+            fallback_message = dify_result.get("raw_response", "Não entendi. Tente de novo. Ex: 'gastei 50 no mercado', 'recebi 1000 de salário', 'resumo do mês'.")
+            send_whatsapp_message(sender_number, fallback_message)
 
     except Exception as e:
         logging.error(f"Erro ao manusear a ação '{action}': {e}")
@@ -746,32 +798,26 @@ def generate_monthly_reminders(db: Session):
     logging.info("Iniciando a geração de lembretes mensais recorrentes.")
     now_utc = datetime.now(TZ_UTC)
     
-    # Busca todos os "modelos" de lembretes mensais
     recurring_templates = db.query(Reminder).filter(Reminder.recurrence == 'monthly').all()
 
     for template in recurring_templates:
         try:
-            # Calcula a data de vencimento para o próximo mês
             next_due_date = template.due_date + relativedelta(months=1)
 
-            # Garante que a data de vencimento calculada está no futuro
             if next_due_date < now_utc:
-                # Se o próximo vencimento calculado ainda está no passado, avança para o próximo mês a partir de hoje
                 next_due_date = now_utc.replace(day=template.due_date.day, hour=template.due_date.hour, minute=template.due_date.minute)
                 if next_due_date < now_utc:
-                     next_due_date += relativedelta(months=1)
+                    next_due_date += relativedelta(months=1)
 
-            # Define o início e o fim do dia do vencimento para a verificação
             start_of_day = next_due_date.replace(hour=0, minute=0, second=0, microsecond=0)
             end_of_day = start_of_day + timedelta(days=1)
 
-            # Verifica se já existe um lembrete para esta descrição neste dia
             exists = db.query(Reminder).filter(
                 Reminder.user_id == template.user_id,
                 Reminder.description == template.description,
                 Reminder.due_date >= start_of_day,
                 Reminder.due_date < end_of_day,
-                Reminder.recurrence == None # Procura por lembretes não-recorrentes
+                Reminder.recurrence == None
             ).first()
 
             if not exists:
@@ -781,18 +827,17 @@ def generate_monthly_reminders(db: Session):
                     description=template.description,
                     due_date=next_due_date,
                     is_sent='false',
-                    recurrence=None # A instância gerada não é recorrente
+                    recurrence=None
                 )
                 db.add(new_instance)
                 
-                # Atualiza a data do modelo para o próximo mês, para a próxima geração
                 template.due_date = next_due_date
         except Exception as e:
             logging.error(f"Erro ao gerar lembrete recorrente para o template ID {template.id}: {e}")
-            db.rollback() # Desfaz em caso de erro para este template
-            continue # Continua para o próximo
+            db.rollback()
+            continue
     
-    db.commit() # Salva todas as alterações no final
+    db.commit()
     logging.info("Geração de lembretes mensais concluída.")
 
 
@@ -822,14 +867,12 @@ def check_and_send_reminders(db: Session):
 
 # ==============================================================================
 # ||                                                                          ||
-# ||                     APLICAÇÃO FASTAPI (ROTAS)                            ||
+# ||                       APLICAÇÃO FASTAPI (ROTAS)                          ||
 # ||                                                                          ||
 # ==============================================================================
 
 app = FastAPI()
 
-# --- CONFIGURAÇÃO DE CORS (Cross-Origin Resource Sharing) ---
-# Voltando para a configuração original do seu backup, que é mais permissiva.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -840,14 +883,13 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "BACKUP_FIX_17_RECURRING"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "18.0_PLANEJAMENTO"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     if secret_key != CRON_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Chave secreta inválida.")
     
-    # Adiciona as duas tarefas ao background
     background_tasks.add_task(generate_monthly_reminders, db=db)
     background_tasks.add_task(check_and_send_reminders, db=db)
     
@@ -890,12 +932,23 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     reminders = db.query(Reminder).filter(
         Reminder.user_id == user.id, 
         Reminder.is_sent == 'false',
-        Reminder.recurrence == None # Mostra apenas lembretes concretos, não os modelos
+        Reminder.recurrence == None
     ).order_by(Reminder.due_date.asc()).all()
+    
+    # NOVO: Busca de contas planejadas
+    planned_expenses = db.query(PlannedExpense).filter(PlannedExpense.user_id == user.id).order_by(PlannedExpense.name).all()
     
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
     incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
     reminders_data = [{"id": r.id, "description": r.description, "due_date": r.due_date.isoformat()} for r in reminders]
+    
+    # NOVO: Formatação dos dados de planejamento
+    planned_expenses_data = [{
+        "id": p.id,
+        "name": p.name,
+        "dueDay": p.due_day,
+        "statuses": json.loads(p.statuses) if p.statuses else {}
+    } for p in planned_expenses]
     
     return {
         "user_id": user.id,
@@ -903,7 +956,8 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "expenses": expenses_data,
         "incomes": incomes_data,
         "categories": categories,
-        "reminders": reminders_data
+        "reminders": reminders_data,
+        "planned_expenses": planned_expenses_data # NOVO CAMPO NA RESPOSTA
     }
 
 @app.put("/api/expense/{expense_id}")
@@ -931,6 +985,7 @@ def delete_expense(expense_id: int, phone_number: str, db: Session = Depends(get
     db.commit()
     return {"status": "success", "message": "Despesa apagada."}
 
+# ... (rotas de income, category, reminder permanecem as mesmas) ...
 @app.put("/api/income/{income_id}")
 def update_income(income_id: int, income_data: IncomeUpdate, phone_number: str, db: Session = Depends(get_db)):
     user = get_user_from_query(db, phone_number)
@@ -1009,6 +1064,61 @@ def delete_reminder_api(reminder_id: int, phone_number: str, db: Session = Depen
     db.delete(reminder)
     db.commit()
     return {"status": "success", "message": "Lembrete apagado."}
+
+# --- NOVAS ROTAS DA API PARA PLANEJAMENTO ---
+
+@app.post("/api/planning/{phone_number}")
+def create_planned_expense(phone_number: str, expense_data: PlannedExpenseCreate, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    new_expense = PlannedExpense(
+        name=expense_data.name,
+        due_day=expense_data.dueDay,
+        user_id=user.id,
+        statuses='{}'
+    )
+    db.add(new_expense)
+    db.commit()
+    db.refresh(new_expense)
+    return {"id": new_expense.id, "name": new_expense.name, "dueDay": new_expense.due_day, "statuses": {}}
+
+@app.put("/api/planning/{expense_id}")
+def update_planned_expense(expense_id: int, expense_data: PlannedExpenseUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(PlannedExpense).filter(PlannedExpense.id == expense_id, PlannedExpense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Conta planejada não encontrada.")
+    
+    expense.name = expense_data.name
+    expense.due_day = expense_data.dueDay
+    db.commit()
+    db.refresh(expense)
+    return {"id": expense.id, "name": expense.name, "dueDay": expense.due_day}
+
+@app.delete("/api/planning/{expense_id}")
+def delete_planned_expense(expense_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(PlannedExpense).filter(PlannedExpense.id == expense_id, PlannedExpense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Conta planejada não encontrada.")
+    
+    db.delete(expense)
+    db.commit()
+    return {"status": "success", "message": "Conta planejada apagada."}
+
+@app.put("/api/planning/status/{expense_id}")
+def update_planned_expense_status(expense_id: int, status_data: StatusUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(PlannedExpense).filter(PlannedExpense.id == expense_id, PlannedExpense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Conta planejada não encontrada.")
+    
+    # Carrega o JSON de status, atualiza e salva de volta
+    statuses = json.loads(expense.statuses) if expense.statuses else {}
+    statuses[status_data.monthKey] = status_data.status
+    expense.statuses = json.dumps(statuses)
+    
+    db.commit()
+    return {"status": "success", "message": f"Status para {status_data.monthKey} atualizado."}
 
 
 @app.post("/webhook/evolution")
