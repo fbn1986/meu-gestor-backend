@@ -5,7 +5,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 14: Adiciona um número de versão para verificar o deploy.
+# VERSÃO 15: Tentativa final de correção de CORS usando regex.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -53,7 +53,7 @@ EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH")
-DASHBOARD_URL = os.getenv("DASHBOARD_URL") # Mantido por boas práticas, mas não usado para CORS
+DASHBOARD_URL = os.getenv("DASHBOARD_URL")
 CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY")
 
 # --- Constantes de Fuso Horário ---
@@ -764,18 +764,11 @@ def check_and_send_reminders(db: Session = Depends(get_db)):
 app = FastAPI()
 
 # --- CONFIGURAÇÃO DE CORS (Cross-Origin Resource Sharing) ---
-# Lista de origens que podem fazer requisições para esta API.
-# A URL do dashboard foi adicionada diretamente para garantir que o CORS funcione.
-allowed_origins = [
-    "https://meu-gestor-dashboard.onrender.com", # URL do frontend
-    "http://localhost",
-    "http://localhost:3000",
-    "http://localhost:5173",
-]
-
+# Abordagem final usando uma expressão regular (regex) para ser mais flexível
+# com a forma como o OnRender pode enviar o cabeçalho de origem.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://meu-gestor-dashboard\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -784,7 +777,7 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     # Esta mensagem foi alterada para podermos verificar se o deploy foi bem-sucedido.
-    return {"Status": "Meu Gestor Backend está online!", "Version": "CORS_FIX_14"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "CORS_FIX_15"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -797,6 +790,7 @@ def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Se
 
 @app.get("/api/verify-token/{token}")
 def verify_token(token: str, db: Session = Depends(get_db)):
+    logging.info(f">>> VERIFICANDO TOKEN: {token}") # Log para depuração
     token_obj = db.query(AuthToken).filter(AuthToken.token == token).first()
     if token_obj and token_obj.expires_at > datetime.now(TZ_UTC):
         phone_number = token_obj.user.phone_number.split('@')[0]
