@@ -5,7 +5,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 13: Correção definitiva de CORS adicionando a URL do frontend diretamente.
+# VERSÃO 14: Adiciona um número de versão para verificar o deploy.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -783,7 +783,8 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!"}
+    # Esta mensagem foi alterada para podermos verificar se o deploy foi bem-sucedido.
+    return {"Status": "Meu Gestor Backend está online!", "Version": "CORS_FIX_14"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
