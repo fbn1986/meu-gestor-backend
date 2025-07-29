@@ -3,7 +3,7 @@
 # ||              MEU GESTOR - BACKEND PRINCIPAL (com API)                    ||
 # ||                                                                          ||
 # ==============================================================================
-# VERSÃO 20.4: Centraliza TODA a lógica de fuso horário no backend.
+# VERSÃO 20.5: Frontend gerencia fuso horário com Luxon. Backend apenas recebe UTC.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -883,7 +883,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "20.4_UNIFIED_TIMEZONE"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "20.5_LUXON_FIX"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -1045,17 +1045,13 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
         # ==================================================================
         # ||                      PONTO DA CORREÇÃO                     ||
         # ==================================================================
-        # A lógica agora é a mesma da criação, garantindo consistência.
-        # 1. Recebe uma string de data/hora "naive" (ingênua) do frontend.
-        naive_dt_str = reminder_data.due_date
-        # 2. Converte para um objeto datetime.
-        naive_dt = datetime.fromisoformat(naive_dt_str)
-        # 3. Assume que a hora é do fuso de São Paulo e a torna "aware".
-        aware_dt_brt = naive_dt.replace(tzinfo=TZ_SAO_PAULO)
-        # 4. Salva o objeto "aware", que será convertido para UTC pelo banco.
-        reminder.due_date = aware_dt_brt
+        # O frontend agora é responsável por enviar uma string ISO em UTC.
+        # O backend simplesmente a converte para um objeto datetime.
+        # O .replace("Z", "+00:00") é uma garantia de compatibilidade.
+        due_date_str = reminder_data.due_date.replace("Z", "+00:00")
+        reminder.due_date = datetime.fromisoformat(due_date_str)
     except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Formato de data inválido.")
+        raise HTTPException(status_code=400, detail="Formato de data inválido vindo do frontend.")
     
     db.commit()
     db.refresh(reminder)
