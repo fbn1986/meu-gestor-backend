@@ -3,7 +3,7 @@
 # ||               MEU GESTOR - BACKEND PRINCIPAL (com API)                   ||
 # ||                                                                          ||
 # ==============================================================================
-# VERSÃO 20.1: Corrige a lógica de fuso horário na criação de lembretes.
+# VERSÃO 20.2: Corrige método de atribuição de fuso horário.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -579,7 +579,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 naive_datetime = datetime.fromisoformat(due_date_str)
                 
                 # 2. Nós informamos ao sistema que essa hora é do fuso de São Paulo
-                aware_datetime_brt = TZ_SAO_PAULO.localize(naive_datetime)
+                aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
                 
                 # 3. O banco de dados irá salvar isso corretamente em UTC.
                 dify_result['due_date'] = aware_datetime_brt
