@@ -1,9 +1,9 @@
 # ==============================================================================
 # ||                                                                          ||
-# ||               MEU GESTOR - BACKEND PRINCIPAL (com API)                   ||
+# ||              MEU GESTOR - BACKEND PRINCIPAL (com API)                    ||
 # ||                                                                          ||
 # ==============================================================================
-# VERSÃO 20.2: Corrige método de atribuição de fuso horário.
+# VERSÃO 20.3: Unifica a lógica de fuso horário para criação e atualização.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -32,7 +32,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                   CONFIGURAÇÃO E INICIALIZAÇÃO                           ||
+# ||                     CONFIGURAÇÃO E INICIALIZAÇÃO                         ||
 # ==============================================================================
 
 load_dotenv()
@@ -74,7 +74,7 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                     ||
+# ||                   MODELOS DO BANCO DE DADOS (SQLALCHEMY)                   ||
 # ==============================================================================
 class User(Base):
     __tablename__ = "users"
@@ -400,7 +400,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                   ||
+# ||                 FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                 ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -451,7 +451,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                         LÓGICA DE PROCESSAMENTO                          ||
+# ||                           LÓGICA DE PROCESSAMENTO                        ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
@@ -765,7 +765,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
 # ==============================================================================
-# ||               FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                   ||
+# ||                   FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                 ||
 # ==============================================================================
 
 def generate_monthly_reminders(db: Session):
@@ -868,7 +868,7 @@ def check_and_send_reminders(db: Session):
 
 
 # ==============================================================================
-# ||                       APLICAÇÃO FASTAPI (ROTAS)                          ||
+# ||                        APLICAÇÃO FASTAPI (ROTAS)                         ||
 # ==============================================================================
 
 app = FastAPI()
@@ -883,7 +883,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "20.1_TIMEZONE_FIX"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "20.3_UNIFIED_TIMEZONE"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -1042,8 +1042,17 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
     
     reminder.description = reminder_data.description
     try:
-        reminder.due_date = datetime.fromisoformat(reminder_data.due_date)
-    except ValueError:
+        # ==================================================================
+        # ||                      PONTO DA CORREÇÃO                     ||
+        # ==================================================================
+        # A lógica agora é a mesma da criação:
+        # 1. Recebe uma string de data/hora "naive" (ingênua) do frontend.
+        naive_dt = datetime.fromisoformat(reminder_data.due_date)
+        # 2. Assume que a hora é do fuso de São Paulo e a torna "aware".
+        aware_dt = naive_dt.replace(tzinfo=TZ_SAO_PAULO)
+        # 3. Salva o objeto "aware", que será convertido para UTC pelo banco.
+        reminder.due_date = aware_dt
+    except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Formato de data inválido.")
     
     db.commit()
