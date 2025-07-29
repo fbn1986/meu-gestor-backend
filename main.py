@@ -5,7 +5,7 @@
 # ==============================================================================
 # Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
 # e a nova API para servir dados ao dashboard.
-# VERSÃO 19: Adiciona automação para marcar contas planejadas como pagas.
+# VERSÃO 20: Adiciona sistema de lembretes proativos e automáticos.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import (create_engine, Column, Integer, String, Numeric,
-                        DateTime, ForeignKey, func, and_, Text) # Adicionado Text
+                        DateTime, ForeignKey, func, and_, Text)
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -39,10 +39,7 @@ from sqlalchemy.exc import SQLAlchemyError
 # ||                                                                          ||
 # ==============================================================================
 
-# Carrega variáveis de ambiente do arquivo .env
 load_dotenv()
-
-# Configuração do logging para observar o comportamento da aplicação
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Variáveis de Ambiente ---
@@ -60,7 +57,6 @@ CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY")
 # --- Constantes de Fuso Horário ---
 TZ_UTC = ZoneInfo("UTC")
 TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
-
 
 # --- Inicialização de APIs e Serviços ---
 openai.api_key = OPENAI_API_KEY
@@ -87,7 +83,6 @@ except Exception as e:
 # ||                                                                          ||
 # ==============================================================================
 class User(Base):
-    """Modelo da tabela de usuários."""
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     phone_number = Column(String, unique=True, index=True, nullable=False)
@@ -101,7 +96,6 @@ class User(Base):
 
 
 class Expense(Base):
-    """Modelo da tabela de despesas."""
     __tablename__ = "expenses"
     id = Column(Integer, primary_key=True, index=True)
     description = Column(String, nullable=False)
@@ -112,7 +106,6 @@ class Expense(Base):
     user = relationship("User", back_populates="expenses")
 
 class Income(Base):
-    """Modelo da tabela de rendas/créditos."""
     __tablename__ = "incomes"
     id = Column(Integer, primary_key=True, index=True)
     description = Column(String, nullable=False)
@@ -122,7 +115,6 @@ class Income(Base):
     user = relationship("User", back_populates="incomes")
 
 class Reminder(Base):
-    """Modelo da tabela de lembretes."""
     __tablename__ = "reminders"
     id = Column(Integer, primary_key=True, index=True)
     description = Column(String, nullable=False)
@@ -131,9 +123,10 @@ class Reminder(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="reminders")
     recurrence = Column(String, nullable=True)
+    pre_reminder_sent = Column(String, default='false')
+
 
 class AuthToken(Base):
-    """Modelo para tokens de autenticação temporários."""
     __tablename__ = "auth_tokens"
     id = Column(Integer, primary_key=True, index=True)
     token = Column(String, unique=True, index=True, nullable=False)
@@ -142,7 +135,6 @@ class AuthToken(Base):
     user = relationship("User", back_populates="auth_tokens")
 
 class Category(Base):
-    """Modelo para categorias personalizadas de usuários."""
     __tablename__ = "categories"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
@@ -150,7 +142,6 @@ class Category(Base):
     user = relationship("User", back_populates="categories")
 
 class PlannedExpense(Base):
-    """Modelo para contas de planejamento mensal."""
     __tablename__ = "planned_expenses"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
@@ -161,34 +152,27 @@ class PlannedExpense(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- Modelos Pydantic para validação de dados da API ---
+# --- Modelos Pydantic ---
 class ExpenseUpdate(BaseModel):
     description: str
     value: float
     category: Optional[str] = None
-
 class IncomeUpdate(BaseModel):
     description: str
     value: float
-
 class CategoryCreate(BaseModel):
     name: str
-
 class CategoryUpdate(BaseModel):
     name: str
-
 class ReminderUpdate(BaseModel):
     description: str
     due_date: str
-
 class PlannedExpenseCreate(BaseModel):
     name: str
     dueDay: int
-
 class PlannedExpenseUpdate(BaseModel):
     name: str
     dueDay: int
-
 class StatusUpdate(BaseModel):
     monthKey: str
     status: str
@@ -558,41 +542,33 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
     
     try:
         if action == "register_expense":
-            # 1. Registra a despesa normalmente
             add_expense(db, user=user, expense_data=dify_result)
             valor = float(dify_result.get('value', 0))
             descricao = dify_result.get('description', 'N/A')
             confirmation = f"✅ Despesa de R$ {valor:.2f} ({descricao}) registrada com sucesso!"
             send_whatsapp_message(sender_number, confirmation)
 
-            # --- NOVA LÓGICA DE AUTOMAÇÃO DE PAGAMENTO ---
-            # 2. Verifica se a despesa corresponde a uma conta planejada
             try:
                 expense_description = descricao.lower()
                 user_planned_expenses = db.query(PlannedExpense).filter(PlannedExpense.user_id == user.id).all()
                 
                 for planned_item in user_planned_expenses:
-                    # Verifica se o nome da conta planejada está na descrição da despesa
                     if planned_item.name.lower() in expense_description:
                         logging.info(f"Despesa '{expense_description}' corresponde à conta planejada '{planned_item.name}'.")
                         
-                        # Define a chave do mês atual (ex: "2025-07")
                         month_key = datetime.now(TZ_SAO_PAULO).strftime('%Y-%m')
                         
-                        # Carrega, atualiza e salva os status
                         statuses = json.loads(planned_item.statuses) if planned_item.statuses else {}
                         
-                        # Só atualiza se o status for diferente de "Pago" para evitar logs desnecessários
                         if statuses.get(month_key) != "Pago":
                             statuses[month_key] = "Pago"
                             planned_item.statuses = json.dumps(statuses)
                             db.commit()
                             logging.info(f"Status da conta '{planned_item.name}' para o mês {month_key} atualizado para 'Pago'.")
                         
-                        break # Para após encontrar a primeira correspondência
+                        break
             except Exception as auto_payment_error:
                 logging.error(f"Erro na automação de pagamento de conta planejada: {auto_payment_error}")
-                # Não interrompe o fluxo principal, a despesa já foi registrada.
 
         elif action == "register_income":
             add_income(db, user=user, income_data=dify_result)
@@ -789,18 +765,20 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         logging.error(f"Erro ao manusear a ação '{action}': {e}")
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
-# --- FUNÇÕES PARA LEMBRETES RECORRENTES ---
+# ==============================================================================
+# ||                                                                          ||
+# ||               FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                   ||
+# ||                                                                          ||
+# ==============================================================================
 
 def generate_monthly_reminders(db: Session):
     logging.info("Iniciando a geração de lembretes mensais recorrentes.")
     now_utc = datetime.now(TZ_UTC)
-    
     recurring_templates = db.query(Reminder).filter(Reminder.recurrence == 'monthly').all()
 
     for template in recurring_templates:
         try:
             next_due_date = template.due_date + relativedelta(months=1)
-
             if next_due_date < now_utc:
                 next_due_date = now_utc.replace(day=template.due_date.day, hour=template.due_date.hour, minute=template.due_date.minute)
                 if next_due_date < now_utc:
@@ -818,16 +796,15 @@ def generate_monthly_reminders(db: Session):
             ).first()
 
             if not exists:
-                logging.info(f"Gerando novo lembrete para '{template.description}' em {next_due_date.strftime('%Y-%m-%d')}")
                 new_instance = Reminder(
                     user_id=template.user_id,
                     description=template.description,
                     due_date=next_due_date,
                     is_sent='false',
+                    pre_reminder_sent='false',
                     recurrence=None
                 )
                 db.add(new_instance)
-                
                 template.due_date = next_due_date
         except Exception as e:
             logging.error(f"Erro ao gerar lembrete recorrente para o template ID {template.id}: {e}")
@@ -839,9 +816,40 @@ def generate_monthly_reminders(db: Session):
 
 
 def check_and_send_reminders(db: Session):
+    """Verifica e envia lembretes proativos e na hora exata."""
     now_utc = datetime.now(TZ_UTC)
-    logging.info(f"Verificando lembretes pendentes em {now_utc.isoformat()}")
+    now_brt = now_utc.astimezone(TZ_SAO_PAULO)
+    
+    # --- 1. LÓGICA PARA LEMBRETES PROATIVOS ---
+    proactive_candidates = db.query(Reminder).filter(
+        Reminder.is_sent == 'false',
+        Reminder.pre_reminder_sent == 'false',
+        Reminder.due_date > now_utc
+    ).all()
 
+    for reminder in proactive_candidates:
+        try:
+            due_date_brt = reminder.due_date.astimezone(TZ_SAO_PAULO)
+            
+            if due_date_brt.hour < 12:
+                notification_window_start = due_date_brt.replace(hour=20, minute=0, second=0) - timedelta(days=1)
+                if now_brt >= notification_window_start:
+                    message = f"👋 Olá! Só pra lembrar do seu compromisso amanhã de manhã: '{reminder.description}' às {due_date_brt.strftime('%H:%M')}."
+                    send_whatsapp_message(reminder.user.phone_number, message)
+                    reminder.pre_reminder_sent = 'true'
+                    db.commit()
+            else:
+                notification_window_start = due_date_brt.replace(hour=9, minute=0, second=0)
+                if now_brt >= notification_window_start:
+                    message = f"👋 Olá! Passando pra lembrar do seu compromisso de hoje: '{reminder.description}' às {due_date_brt.strftime('%H:%M')}."
+                    send_whatsapp_message(reminder.user.phone_number, message)
+                    reminder.pre_reminder_sent = 'true'
+                    db.commit()
+        except Exception as e:
+            logging.error(f"Falha ao enviar lembrete proativo ID {reminder.id}: {e}")
+            db.rollback()
+
+    # --- 2. LÓGICA PARA LEMBRETES NA HORA EXATA ---
     due_reminders = db.query(Reminder).filter(
         Reminder.due_date <= now_utc,
         Reminder.is_sent == 'false'
@@ -849,16 +857,17 @@ def check_and_send_reminders(db: Session):
 
     for reminder in due_reminders:
         try:
-            logging.info(f"Enviando lembrete para {reminder.user.phone_number}: {reminder.description}")
             due_time_brt = reminder.due_date.astimezone(TZ_SAO_PAULO).strftime('%H:%M')
-            message = f"⏰ Lembrete: {reminder.description} às {due_time_brt}hrs."
+            message = f"⏰ Lembrete: {reminder.description} agora às {due_time_brt}."
             send_whatsapp_message(reminder.user.phone_number, message)
             
             reminder.is_sent = 'true'
             db.commit()
         except Exception as e:
-            logging.error(f"Falha ao enviar lembrete ID {reminder.id}: {e}")
+            logging.error(f"Falha ao enviar lembrete na hora exata ID {reminder.id}: {e}")
             db.rollback()
+
+    logging.info("Verificação de lembretes concluída.")
 
 
 # ==============================================================================
@@ -879,7 +888,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "19.0_AUTO_PAGAMENTO"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "20.0_LEMBRETES_PROATIVOS"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -889,8 +898,7 @@ def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Se
     background_tasks.add_task(generate_monthly_reminders, db=db)
     background_tasks.add_task(check_and_send_reminders, db=db)
     
-    return {"status": "success", "message": "Verificação e geração de lembretes iniciada."}
-
+    return {"status": "success", "message": "Verificação e geração de lembretes (proativos e normais) iniciada."}
 
 @app.get("/api/verify-token/{token}")
 def verify_token(token: str, db: Session = Depends(get_db)):
@@ -1058,8 +1066,6 @@ def delete_reminder_api(reminder_id: int, phone_number: str, db: Session = Depen
     db.commit()
     return {"status": "success", "message": "Lembrete apagado."}
 
-
-# --- ROTAS DA API PARA PLANEJAMENTO ---
 
 @app.post("/api/planning/{phone_number}")
 def create_planned_expense(phone_number: str, expense_data: PlannedExpenseCreate, db: Session = Depends(get_db)):
