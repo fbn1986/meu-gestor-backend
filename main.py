@@ -3,9 +3,7 @@
 # ||               MEU GESTOR - BACKEND PRINCIPAL (com API)                   ||
 # ||                                                                          ||
 # ==============================================================================
-# Este arquivo contém toda a lógica para o assistente financeiro do WhatsApp
-# e a nova API para servir dados ao dashboard.
-# VERSÃO 20: Adiciona sistema de lembretes proativos e automáticos.
+# VERSÃO 20.1: Corrige a lógica de fuso horário na criação de lembretes.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -34,9 +32,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                                                                          ||
 # ||                   CONFIGURAÇÃO E INICIALIZAÇÃO                           ||
-# ||                                                                          ||
 # ==============================================================================
 
 load_dotenv()
@@ -78,9 +74,7 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||                                                                          ||
 # ||               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                     ||
-# ||                                                                          ||
 # ==============================================================================
 class User(Base):
     __tablename__ = "users"
@@ -186,9 +180,7 @@ def get_db():
 
 
 # ==============================================================================
-# ||                                                                          ||
 # ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
-# ||                                                                          ||
 # ==============================================================================
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
@@ -408,9 +400,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                                                                          ||
-# ||               FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                   ||
-# ||                                                                          ||
+# ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                   ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -461,9 +451,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                                                                          ||
 # ||                         LÓGICA DE PROCESSAMENTO                          ||
-# ||                                                                          ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
@@ -581,23 +569,34 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             recurrence = dify_result.get('recurrence')
+            
+            if not due_date_str:
+                send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
+                return
+
             try:
+                # 1. A IA envia uma data/hora local "naive" (sem fuso)
                 naive_datetime = datetime.fromisoformat(due_date_str)
-                aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
                 
+                # 2. Nós informamos ao sistema que essa hora é do fuso de São Paulo
+                aware_datetime_brt = TZ_SAO_PAULO.localize(naive_datetime)
+                
+                # 3. O banco de dados irá salvar isso corretamente em UTC.
                 dify_result['due_date'] = aware_datetime_brt
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
+                # 4. Formatamos a data local (BRT) para a mensagem de confirmação
                 data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
                 if recurrence == 'monthly':
                     confirmation += " Este lembrete se repetirá mensalmente."
+                
+                send_whatsapp_message(sender_number, confirmation)
 
-            except (ValueError, TypeError):
-                add_reminder(db, user=user, reminder_data=dify_result)
-                confirmation = f"🗓️ Lembrete '{descricao}' agendado com sucesso!"
-            send_whatsapp_message(sender_number, confirmation)
-
+            except (ValueError, TypeError) as e:
+                logging.error(f"Erro ao processar data do lembrete: {e}")
+                send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
+        
         elif action == "add_planned_expense":
             name = dify_result.get("name")
             due_day = dify_result.get("due_day")
@@ -766,9 +765,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
 # ==============================================================================
-# ||                                                                          ||
 # ||               FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                   ||
-# ||                                                                          ||
 # ==============================================================================
 
 def generate_monthly_reminders(db: Session):
@@ -871,9 +868,7 @@ def check_and_send_reminders(db: Session):
 
 
 # ==============================================================================
-# ||                                                                          ||
 # ||                       APLICAÇÃO FASTAPI (ROTAS)                          ||
-# ||                                                                          ||
 # ==============================================================================
 
 app = FastAPI()
@@ -888,7 +883,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "20.0_LEMBRETES_PROATIVOS"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "20.1_TIMEZONE_FIX"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
