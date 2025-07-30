@@ -1,9 +1,9 @@
-# ===============================================================================
+# ==============================================================================
 # ||                                                                          ||
 # ||               MEU GESTOR - BACKEND PRINCIPAL (com API)                   ||
 # ||                                                                          ||
-# ===============================================================================
-# VERSÃO 20.3: Ajuste de parsing de data UTC no update_reminder_api
+# ==============================================================================
+# VERSÃO 20.2: Corrige método de atribuição de fuso horário.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -30,28 +30,29 @@ from sqlalchemy import (create_engine, Column, Integer, String, Numeric,
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.exc import SQLAlchemyError
 
-# ===============================================================================
+
+# ==============================================================================
 # ||                   CONFIGURAÇÃO E INICIALIZAÇÃO                           ||
-# ===============================================================================
+# ==============================================================================
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Variáveis de Ambiente ---
-DATABASE_URL      = os.getenv("DATABASE_URL")
-DIFY_API_URL      = os.getenv("DIFY_API_URL")
-DIFY_API_KEY      = os.getenv("DIFY_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
+DIFY_API_URL = os.getenv("DIFY_API_URL")
+DIFY_API_KEY = os.getenv("DIFY_API_KEY")
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL")
 EVOLUTION_INSTANCE_NAME = os.getenv("EVOLUTION_INSTANCE_NAME")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY")
-OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
-FFMPEG_PATH       = os.getenv("FFMPEG_PATH")
-DASHBOARD_URL     = os.getenv("DASHBOARD_URL")
-CRON_SECRET_KEY   = os.getenv("CRON_SECRET_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+FFMPEG_PATH = os.getenv("FFMPEG_PATH")
+DASHBOARD_URL = os.getenv("DASHBOARD_URL")
+CRON_SECRET_KEY = os.getenv("CRON_SECRET_KEY")
 
 # --- Constantes de Fuso Horário ---
-TZ_UTC         = ZoneInfo("UTC")
-TZ_SAO_PAULO   = ZoneInfo("America/Sao_Paulo")
+TZ_UTC = ZoneInfo("UTC")
+TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 
 # --- Inicialização de APIs e Serviços ---
 openai.api_key = OPENAI_API_KEY
@@ -71,74 +72,77 @@ except Exception as e:
     logging.error(f"Erro fatal ao conectar ao banco de dados: {e}")
     exit()
 
-# ===============================================================================
+
+# ==============================================================================
 # ||               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                     ||
-# ===============================================================================
+# ==============================================================================
 class User(Base):
     __tablename__ = "users"
-    id            = Column(Integer, primary_key=True, index=True)
-    phone_number  = Column(String, unique=True, index=True, nullable=False)
-    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(TZ_UTC))
-    expenses      = relationship("Expense", back_populates="user")
-    incomes       = relationship("Income", back_populates="user")
-    reminders     = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
-    auth_tokens   = relationship("AuthToken", back_populates="user")
-    categories    = relationship("Category", back_populates="user", cascade="all, delete-orphan")
+    id = Column(Integer, primary_key=True, index=True)
+    phone_number = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(TZ_UTC))
+    expenses = relationship("Expense", back_populates="user")
+    incomes = relationship("Income", back_populates="user")
+    reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
+    auth_tokens = relationship("AuthToken", back_populates="user")
+    categories = relationship("Category", back_populates="user", cascade="all, delete-orphan")
     planned_expenses = relationship("PlannedExpense", back_populates="user", cascade="all, delete-orphan")
 
+
 class Expense(Base):
-    __tablename__        = "expenses"
-    id                   = Column(Integer, primary_key=True, index=True)
-    description          = Column(String, nullable=False)
-    value                = Column(Numeric(10, 2), nullable=False)
-    category             = Column(String)
-    transaction_date     = Column(DateTime(timezone=True), default=lambda: datetime.now(TZ_UTC))
-    user_id              = Column(Integer, ForeignKey("users.id"))
-    user                 = relationship("User", back_populates="expenses")
+    __tablename__ = "expenses"
+    id = Column(Integer, primary_key=True, index=True)
+    description = Column(String, nullable=False)
+    value = Column(Numeric(10, 2), nullable=False)
+    category = Column(String)
+    transaction_date = Column(DateTime(timezone=True), default=lambda: datetime.now(TZ_UTC))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="expenses")
 
 class Income(Base):
-    __tablename__        = "incomes"
-    id                   = Column(Integer, primary_key=True, index=True)
-    description          = Column(String, nullable=False)
-    value                = Column(Numeric(10, 2), nullable=False)
-    transaction_date     = Column(DateTime(timezone=True), default=lambda: datetime.now(TZ_UTC))
-    user_id              = Column(Integer, ForeignKey("users.id"))
-    user                 = relationship("User", back_populates="incomes")
+    __tablename__ = "incomes"
+    id = Column(Integer, primary_key=True, index=True)
+    description = Column(String, nullable=False)
+    value = Column(Numeric(10, 2), nullable=False)
+    transaction_date = Column(DateTime(timezone=True), default=lambda: datetime.now(TZ_UTC))
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="incomes")
 
 class Reminder(Base):
-    __tablename__        = "reminders"
-    id                   = Column(Integer, primary_key=True, index=True)
-    description          = Column(String, nullable=False)
-    due_date             = Column(DateTime(timezone=True), nullable=False)
-    is_sent              = Column(String, default='false')
-    user_id              = Column(Integer, ForeignKey("users.id"))
-    user                 = relationship("User", back_populates="reminders")
-    recurrence           = Column(String, nullable=True)
-    pre_reminder_sent    = Column(String, default='false')
+    __tablename__ = "reminders"
+    id = Column(Integer, primary_key=True, index=True)
+    description = Column(String, nullable=False)
+    due_date = Column(DateTime(timezone=True), nullable=False)
+    is_sent = Column(String, default='false')
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="reminders")
+    recurrence = Column(String, nullable=True)
+    pre_reminder_sent = Column(String, default='false')
+
 
 class AuthToken(Base):
-    __tablename__        = "auth_tokens"
-    id                   = Column(Integer, primary_key=True, index=True)
-    token                = Column(String, unique=True, index=True, nullable=False)
-    user_id              = Column(Integer, ForeignKey("users.id"))
-    expires_at           = Column(DateTime(timezone=True), nullable=False)
-    user                 = relationship("User", back_populates="auth_tokens")
+    __tablename__ = "auth_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    user = relationship("User", back_populates="auth_tokens")
 
 class Category(Base):
-    __tablename__        = "categories"
-    id                   = Column(Integer, primary_key=True, index=True)
-    name                 = Column(String, nullable=False)
-    user_id              = Column(Integer, ForeignKey("users.id"))
-    user                 = relationship("User", back_populates="categories")
+    __tablename__ = "categories"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="categories")
 
 class PlannedExpense(Base):
-    __tablename__        = "planned_expenses"
-    id                   = Column(Integer, primary_key=True, index=True)
-    name                 = Column(String, nullable=False)
-    due_day              = Column(Integer, nullable=False)
-    statuses             = Column(Text, nullable=False, default='{}')
-    user_id              = Column(Integer, ForeignKey("users.id"))
-    user                 = relationship("User", back_populates="planned_expenses")
+    __tablename__ = "planned_expenses"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    due_day = Column(Integer, nullable=False)
+    statuses = Column(Text, nullable=False, default='{}')
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="planned_expenses")
 
 Base.metadata.create_all(bind=engine)
 
@@ -396,7 +400,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                 FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                 ||
+# ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                   ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -447,7 +451,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                           LÓGICA DE PROCESSAMENTO                        ||
+# ||                         LÓGICA DE PROCESSAMENTO                          ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
@@ -554,43 +558,40 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             except Exception as auto_payment_error:
                 logging.error(f"Erro na automação de pagamento de conta planejada: {auto_payment_error}")
 
-        elif action == "register_income":
-            add_income(db, user=user, income_data=dify_result)
-            valor = float(dify_result.get('value', 0))
+                elif action == "create_reminder":
             descricao = dify_result.get('description', 'N/A')
-            confirmation = f"💰 Crédito de R$ {valor:.2f} ({descricao}) registrado com sucesso!"
+            due_date_str = dify_result.get('due_date')
+            recurrence = dify_result.get('recurrence')
+
+            if not due_date_str:
+                send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
+                return
+
+            try:
+                # Aceita ISO8601 com ou sem fuso e com Z (UTC)
+                from dateutil import parser
+                parsed_dt = parser.isoparse(due_date_str)
+                if parsed_dt.tzinfo is None:
+                    # Interpreta como BRT caso não tenha fuso
+                    aware_datetime_brt = parsed_dt.replace(tzinfo=TZ_SAO_PAULO)
+                else:
+                    # Converte para BRT caso já tenha timezone
+                    aware_datetime_brt = parsed_dt.astimezone(TZ_SAO_PAULO)
+            except Exception as e:
+                logging.error(f"Erro ao processar data do lembrete: {e}")
+                send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
+                return
+
+            # O banco salva corretamente em UTC
+            dify_result['due_date'] = aware_datetime_brt
+            add_reminder(db, user=user, reminder_data=dify_result)
+
+            # Mensagem de confirmação já no horário de São Paulo
+            data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
+            confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
+            if recurrence == 'monthly':
+                confirmation += " Este lembrete se repetirá mensalmente."
             send_whatsapp_message(sender_number, confirmation)
-
-        elif action == "create_reminder":
-    descricao     = dify_result.get('description', 'N/A')
-    due_date_str  = dify_result.get('due_date')
-    recurrence     = dify_result.get('recurrence')
-
-    if not due_date_str:
-        send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
-        return
-
-    try:
-        from dateutil import parser
-        parsed_dt = parser.isoparse(due_date_str)
-        if parsed_dt.tzinfo is None:
-            aware_datetime_brt = parsed_dt.replace(tzinfo=TZ_SAO_PAULO)
-        else:
-            aware_datetime_brt = parsed_dt.astimezone(TZ_SAO_PAULO)
-    except Exception as e:
-        logging.error(f"Erro ao processar data do lembrete: {e}")
-        send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
-        return
-
-    dify_result['due_date'] = aware_datetime_brt
-    add_reminder(db, user=user, reminder_data=dify_result)
-
-    data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
-    confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
-    if recurrence == 'monthly':
-        confirmation += " Este lembrete se repetirá mensalmente."
-    send_whatsapp_message(sender_number, confirmation)
-
 
             except (ValueError, TypeError) as e:
                 logging.error(f"Erro ao processar data do lembrete: {e}")
@@ -764,7 +765,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
 # ==============================================================================
-# ||                   FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                 ||
+# ||               FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                   ||
 # ==============================================================================
 
 def generate_monthly_reminders(db: Session):
@@ -866,10 +867,12 @@ def check_and_send_reminders(db: Session):
     logging.info("Verificação de lembretes concluída.")
 
 
-# ===============================================================================
+# ==============================================================================
 # ||                       APLICAÇÃO FASTAPI (ROTAS)                          ||
-# ===============================================================================
+# ==============================================================================
+
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -880,16 +883,17 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "20.3_TIMEZONE_FIX"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "20.1_TIMEZONE_FIX"}
 
-# --- Trigger reminders ---
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     if secret_key != CRON_SECRET_KEY:
         raise HTTPException(status_code=403, detail="Chave secreta inválida.")
+    
     background_tasks.add_task(generate_monthly_reminders, db=db)
     background_tasks.add_task(check_and_send_reminders, db=db)
-    return {"status": "success", "message": "Verificação e geração de lembretes iniciada."}
+    
+    return {"status": "success", "message": "Verificação e geração de lembretes (proativos e normais) iniciada."}
 
 @app.get("/api/verify-token/{token}")
 def verify_token(token: str, db: Session = Depends(get_db)):
@@ -904,22 +908,149 @@ def verify_token(token: str, db: Session = Depends(get_db)):
         db.commit()
     raise HTTPException(status_code=404, detail="Token inválido ou expirado.")
 
+def get_user_from_query(db: Session, phone_number: str) -> User:
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="Número de telefone é obrigatório.")
+    
+    cleaned_number = re.sub(r'\D', '', phone_number)
+    if not cleaned_number.startswith('55'):
+        cleaned_number = f"55{cleaned_number}"
+    phone_number_jid = f"{cleaned_number}@s.whatsapp.net"
+    
+    user = db.query(User).filter(User.phone_number == phone_number_jid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    return user
+
+@app.get("/api/data/{phone_number}")
+def get_user_data(phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expenses = db.query(Expense).filter(Expense.user_id == user.id).order_by(Expense.transaction_date.desc()).all()
+    incomes = db.query(Income).filter(Income.user_id == user.id).order_by(Income.transaction_date.desc()).all()
+    categories = get_user_categories(db, user)
+    reminders = db.query(Reminder).filter(
+        Reminder.user_id == user.id, 
+        Reminder.is_sent == 'false',
+        Reminder.recurrence == None
+    ).order_by(Reminder.due_date.asc()).all()
+    
+    planned_expenses = db.query(PlannedExpense).filter(PlannedExpense.user_id == user.id).order_by(PlannedExpense.name).all()
+    
+    expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
+    incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
+    reminders_data = [{"id": r.id, "description": r.description, "due_date": r.due_date.isoformat()} for r in reminders]
+    
+    planned_expenses_data = [{
+        "id": p.id,
+        "name": p.name,
+        "dueDay": p.due_day,
+        "statuses": json.loads(p.statuses) if p.statuses else {}
+    } for p in planned_expenses]
+    
+    return {
+        "user_id": user.id,
+        "phone_number": user.phone_number,
+        "expenses": expenses_data,
+        "incomes": incomes_data,
+        "categories": categories,
+        "reminders": reminders_data,
+        "planned_expenses": planned_expenses_data
+    }
+
+@app.put("/api/expense/{expense_id}")
+def update_expense(expense_id: int, expense_data: ExpenseUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(Expense).filter(Expense.id == expense_id, Expense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Despesa não encontrada.")
+    
+    expense.description = expense_data.description
+    expense.value = expense_data.value
+    expense.category = expense_data.category
+    db.commit()
+    db.refresh(expense)
+    return expense
+
+@app.delete("/api/expense/{expense_id}")
+def delete_expense(expense_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(Expense).filter(Expense.id == expense_id, Expense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Despesa não encontrada.")
+    
+    db.delete(expense)
+    db.commit()
+    return {"status": "success", "message": "Despesa apagada."}
+
+@app.put("/api/income/{income_id}")
+def update_income(income_id: int, income_data: IncomeUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    income = db.query(Income).filter(Income.id == income_id, Income.user_id == user.id).first()
+    if not income:
+        raise HTTPException(status_code=404, detail="Crédito não encontrado.")
+        
+    income.description = income_data.description
+    income.value = income_data.value
+    db.commit()
+    db.refresh(income)
+    return income
+
+@app.delete("/api/income/{income_id}")
+def delete_income(income_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    income = db.query(Income).filter(Income.id == income_id, Income.user_id == user.id).first()
+    if not income:
+        raise HTTPException(status_code=404, detail="Crédito não encontrado.")
+        
+    db.delete(income)
+    db.commit()
+    return {"status": "success", "message": "Crédito apagado."}
+
+@app.post("/api/categories/{phone_number}")
+def add_category_api(phone_number: str, category: CategoryCreate, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    new_cat = create_user_category(db, user, category.name)
+    return {"id": new_cat.id, "name": new_cat.name, "is_default": False}
+
+@app.put("/api/category/{category_id}")
+def update_category_api(category_id: int, category_data: CategoryUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    cat_to_update = db.query(Category).filter(Category.id == category_id, Category.user_id == user.id).first()
+    if not cat_to_update:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada ou não pertence a este usuário.")
+    cat_to_update.name = category_data.name
+    db.commit()
+    db.refresh(cat_to_update)
+    return {"id": cat_to_update.id, "name": cat_to_update.name, "is_default": False}
+
+@app.delete("/api/category/{category_id}")
+def delete_category_api(category_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    cat_to_delete = db.query(Category).filter(Category.id == category_id, Category.user_id == user.id).first()
+    if not cat_to_delete:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada ou não pertence a este usuário.")
+    db.delete(cat_to_delete)
+    db.commit()
+    return {"status": "success", "message": "Categoria apagada."}
+
 @app.put("/api/reminder/{reminder_id}")
 def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_number: str, db: Session = Depends(get_db)):
     user = get_user_from_query(db, phone_number)
     reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id).first()
     if not reminder:
         raise HTTPException(status_code=404, detail="Lembrete não encontrado.")
+    
     reminder.description = reminder_data.description
     try:
-        # Ajuste: aceita ISO UTC com 'Z'
-        due_date_str = reminder_data.due_date.replace("Z", "+00:00")
-        reminder.due_date = datetime.fromisoformat(due_date_str)
-    except (ValueError, AttributeError):
-        raise HTTPException(status_code=400, detail="Formato de data inválido vindo do frontend.")
+        reminder.due_date = datetime.fromisoformat(reminder_data.due_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de data inválido.")
+    
     db.commit()
     db.refresh(reminder)
-    @app.delete("/api/reminder/{reminder_id}")
+    return {"id": reminder.id, "description": reminder.description, "due_date": reminder.due_date.isoformat()}
+
+@app.delete("/api/reminder/{reminder_id}")
 def delete_reminder_api(reminder_id: int, phone_number: str, db: Session = Depends(get_db)):
     user = get_user_from_query(db, phone_number)
     reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id).first()
