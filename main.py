@@ -558,7 +558,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             except Exception as auto_payment_error:
                 logging.error(f"Erro na automação de pagamento de conta planejada: {auto_payment_error}")
 
-                        elif action == "create_reminder":
+           elif action == "create_reminder":
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             recurrence = dify_result.get('recurrence')
