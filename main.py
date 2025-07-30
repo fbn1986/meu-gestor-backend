@@ -595,7 +595,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 dify_result['due_date'] = dt_utc
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
-                data_formatada = reminder.due_date.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y às %H:%M')
+                data_formatada = dt_utc.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
                 if recurrence == 'monthly':
                     confirmation += " Este lembrete se repetirá mensalmente."
