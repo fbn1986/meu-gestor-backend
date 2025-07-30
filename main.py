@@ -568,18 +568,18 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         elif action == "create_reminder":
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
-            recurrence = dify_result.get('recurrence')
-            
-            if not due_date_str:
-                send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
-                return
+recurrence = dify_result.get('recurrence')
+if not due_date_str:
+    send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
+    return
 
-            try:
-                # 1. A IA envia uma data/hora local "naive" (sem fuso)
-                naive_datetime = datetime.fromisoformat(due_date_str)
-                
-                # 2. Nós informamos ao sistema que essa hora é do fuso de São Paulo
-                aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
+try:
+    from dateutil import parser
+    parsed_dt = parser.isoparse(due_date_str)
+    if parsed_dt.tzinfo is None:
+        aware_datetime_brt = parsed_dt.replace(tzinfo=TZ_SAO_PAULO)
+    else:
+        aware_datetime_brt = parsed_dt.astimezone(TZ_SAO_PAULO)
                 
                 # 3. O banco de dados irá salvar isso corretamente em UTC.
                 dify_result['due_date'] = aware_datetime_brt
