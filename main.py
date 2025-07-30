@@ -562,38 +562,35 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             send_whatsapp_message(sender_number, confirmation)
 
         elif action == "create_reminder":
-            descricao = dify_result.get('description', 'N/A')
-            due_date_str = dify_result.get('due_date')
-try:
-    from dateutil import parser
-    recurrence = dify_result.get('recurrence')
-if not due_date_str:
-    send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
-    return
+    descricao     = dify_result.get('description', 'N/A')
+    due_date_str  = dify_result.get('due_date')
+    recurrence     = dify_result.get('recurrence')
 
-try:
-    from dateutil import parser
-    parsed_dt = parser.isoparse(due_date_str)
-    if parsed_dt.tzinfo is None:
-        aware_datetime_brt = parsed_dt.replace(tzinfo=TZ_SAO_PAULO)
-    else:
-        aware_datetime_brt = parsed_dt.astimezone(TZ_SAO_PAULO)
-except Exception as e:
-    logging.error(f"Erro ao processar data do lembrete: {e}")
-    send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
-    return
-                
-                # 3. O banco de dados irá salvar isso corretamente em UTC.
-                dify_result['due_date'] = aware_datetime_brt
-                add_reminder(db, user=user, reminder_data=dify_result)
-                
-                # 4. Formatamos a data local (BRT) para a mensagem de confirmação
-                data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
-                confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
-                if recurrence == 'monthly':
-                    confirmation += " Este lembrete se repetirá mensalmente."
-                
-                send_whatsapp_message(sender_number, confirmation)
+    if not due_date_str:
+        send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
+        return
+
+    try:
+        from dateutil import parser
+        parsed_dt = parser.isoparse(due_date_str)
+        if parsed_dt.tzinfo is None:
+            aware_datetime_brt = parsed_dt.replace(tzinfo=TZ_SAO_PAULO)
+        else:
+            aware_datetime_brt = parsed_dt.astimezone(TZ_SAO_PAULO)
+    except Exception as e:
+        logging.error(f"Erro ao processar data do lembrete: {e}")
+        send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
+        return
+
+    dify_result['due_date'] = aware_datetime_brt
+    add_reminder(db, user=user, reminder_data=dify_result)
+
+    data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
+    confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
+    if recurrence == 'monthly':
+        confirmation += " Este lembrete se repetirá mensalmente."
+    send_whatsapp_message(sender_number, confirmation)
+
 
             except (ValueError, TypeError) as e:
                 logging.error(f"Erro ao processar data do lembrete: {e}")
@@ -922,11 +919,108 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
         raise HTTPException(status_code=400, detail="Formato de data inválido vindo do frontend.")
     db.commit()
     db.refresh(reminder)
-    return {"id": reminder.id, "description": reminder.description, "due_date": reminder.due_date.isoformat()}
+    @app.delete("/api/reminder/{reminder_id}")
+def delete_reminder_api(reminder_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    reminder = db.query(Reminder).filter(Reminder.id == reminder_id, Reminder.user_id == user.id).first()
+    if not reminder:
+        raise HTTPException(status_code=404, detail="Lembrete não encontrado.")
+    
+    db.delete(reminder)
+    db.commit()
+    return {"status": "success", "message": "Lembrete apagado."}
 
-# [demais rotas sem alterações...]
+
+@app.post("/api/planning/{phone_number}")
+def create_planned_expense(phone_number: str, expense_data: PlannedExpenseCreate, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    new_expense = PlannedExpense(
+        name=expense_data.name,
+        due_day=expense_data.dueDay,
+        user_id=user.id,
+        statuses='{}'
+    )
+    db.add(new_expense)
+    db.commit()
+    db.refresh(new_expense)
+    return {"id": new_expense.id, "name": new_expense.name, "dueDay": new_expense.due_day, "statuses": {}}
+
+@app.put("/api/planning/{expense_id}")
+def update_planned_expense(expense_id: int, expense_data: PlannedExpenseUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(PlannedExpense).filter(PlannedExpense.id == expense_id, PlannedExpense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Conta planejada não encontrada.")
+    
+    expense.name = expense_data.name
+    expense.due_day = expense_data.dueDay
+    db.commit()
+    db.refresh(expense)
+    return {"id": expense.id, "name": expense.name, "dueDay": expense.due_day}
+
+@app.delete("/api/planning/{expense_id}")
+def delete_planned_expense(expense_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(PlannedExpense).filter(PlannedExpense.id == expense_id, PlannedExpense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Conta planejada não encontrada.")
+    
+    db.delete(expense)
+    db.commit()
+    return {"status": "success", "message": "Conta planejada apagada."}
+
+@app.put("/api/planning/status/{expense_id}")
+def update_planned_expense_status(expense_id: int, status_data: StatusUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    expense = db.query(PlannedExpense).filter(PlannedExpense.id == expense_id, PlannedExpense.user_id == user.id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Conta planejada não encontrada.")
+    
+    statuses = json.loads(expense.statuses) if expense.statuses else {}
+    statuses[status_data.monthKey] = status_data.status
+    expense.statuses = json.dumps(statuses)
+    
+    db.commit()
+    return {"status": "success", "message": f"Status para {status_data.monthKey} atualizado."}
+
+
+@app.post("/webhook/evolution")
+async def evolution_webhook(request: Request, db: Session = Depends(get_db)):
+    data = await request.json()
+    logging.info(f"DADOS RECEBIDOS: {json.dumps(data, indent=2)}")
+
+    if data.get("event") != "messages.upsert":
+        return {"status": "evento_ignorado"}
+    message_data = data.get("data", {})
+    if message_data.get("key", {}).get("fromMe"):
+        return {"status": "mensagem_propria_ignorada"}
+    
+    sender_number = message_data.get("key", {}).get("remoteJid")
+    message = message_data.get("message", {})
+    if not sender_number or not message:
+        return {"status": "dados_insuficientes"}
+
+    dify_result = None
+    if "conversation" in message and message["conversation"]:
+        dify_result = process_text_message(message["conversation"], sender_number, db)
+    elif "audioMessage" in message:
+        dify_result = process_audio_message(message, sender_number, db)
+    elif "imageMessage" in message:
+        dify_result = process_image_message(message, sender_number)
+    else:
+        logging.info(f"Tipo de mensagem não suportado: {list(message.keys())}")
+        return {"status": "tipo_nao_suportado"}
+
+    if not dify_result:
+        logging.warning("Sem resultado do Dify. Abortando.")
+        return {"status": "falha_dify"}
+
+    user = get_or_create_user(db, phone_number=sender_number)
+    handle_dify_action(dify_result, user, db)
+
+    return {"status": "processado"}
+
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
