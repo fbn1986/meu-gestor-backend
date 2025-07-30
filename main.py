@@ -182,22 +182,25 @@ def get_db():
 # ||                         FUNÇÕES DE LÓGICA E HELPERS                      ||
 # ==============================================================================
 
-def parse_datetime_brt(dt_str: str) -> datetime:
+def parse_datetime_brt_to_utc(dt_str: str) -> datetime:
     """
-    - Se dt_str vier com fuso horário, converte para São Paulo.
-    - Se dt_str vier sem fuso, assume que é São Paulo.
+    Converte string ISO (vinda do Dify ou da API) para datetime em UTC.
+    - Se vier com fuso (ex: '2025-07-31T09:30:00-03:00'), converte para UTC.
+    - Se vier 'naive' (sem fuso), assume que está em São Paulo (BRT) e converte para UTC.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
     TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
-
+    TZ_UTC = ZoneInfo("UTC")
     if dt_str.endswith("Z"):
-        dt_str = dt_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        return dt.astimezone(TZ_UTC)
     dt = datetime.fromisoformat(dt_str)
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=TZ_SAO_PAULO)
+        dt_brt = dt.replace(tzinfo=TZ_SAO_PAULO)
+        return dt_brt.astimezone(TZ_UTC)
     else:
-        return dt.astimezone(TZ_SAO_PAULO)
+        return dt.astimezone(TZ_UTC)
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
     user = db.query(User).filter(User.phone_number == phone_number).first()
@@ -574,37 +577,32 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             except Exception as auto_payment_error:
                 logging.error(f"Erro na automação de pagamento de conta planejada: {auto_payment_error}")
 
-        elif action == "register_income":
-            add_income(db, user=user, income_data=dify_result)
-            valor = float(dify_result.get('value', 0))
-            descricao = dify_result.get('description', 'N/A')
-            confirmation = f"💰 Crédito de R$ {valor:.2f} ({descricao}) registrado com sucesso!"
-            send_whatsapp_message(sender_number, confirmation)
-
         elif action == "create_reminder":
-            descricao = dify_result.get('description', 'N/A')
-            due_date_str = dify_result.get('due_date')
-            recurrence = dify_result.get('recurrence')
-            
-            if not due_date_str:
-                send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
-                return
+    descricao = dify_result.get('description', 'N/A')
+    due_date_str = dify_result.get('due_date')
+    recurrence = dify_result.get('recurrence')
+    
+    if not due_date_str:
+        send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
+        return
 
-            try:
-                # Usa a nova função unificada para interpretar a data
-                dt_brt = parse_datetime_brt(due_date_str)
-                dify_result['due_date'] = dt_brt
-                add_reminder(db, user=user, reminder_data=dify_result)
-                data_formatada = dt_brt.strftime('%d/%m/%Y às %H:%M')
-                confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
-                if recurrence == 'monthly':
-                    confirmation += " Este lembrete se repetirá mensalmente."
-                
-                send_whatsapp_message(sender_number, confirmation)
+    try:
+        # Aqui troca para a função UTC!
+        dt_utc = parse_datetime_brt_to_utc(due_date_str)
+        dify_result['due_date'] = dt_utc
+        add_reminder(db, user=user, reminder_data=dify_result)
+        # Para exibir no WhatsApp, converta para BRT
+        data_formatada = dt_utc.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y às %H:%M')
+        confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
+        if recurrence == 'monthly':
+            confirmation += " Este lembrete se repetirá mensalmente."
+        
+        send_whatsapp_message(sender_number, confirmation)
 
-            except (ValueError, TypeError) as e:
-                logging.error(f"Erro ao processar data do lembrete: {e}")
-                send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
+    except (ValueError, TypeError) as e:
+        logging.error(f"Erro ao processar data do lembrete: {e}")
+        send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
+
         
         elif action == "add_planned_expense":
             name = dify_result.get("name")
@@ -1051,9 +1049,9 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
     
     reminder.description = reminder_data.description
     try:
-        # Usa a nova função unificada para interpretar a data
-        dt_brt = parse_datetime_brt(reminder_data.due_date)
-        reminder.due_date = dt_brt
+        # Sempre converte para UTC
+        dt_utc = parse_datetime_brt_to_utc(reminder_data.due_date)
+        reminder.due_date = dt_utc
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Formato de data inválido.")
     
