@@ -568,7 +568,9 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         elif action == "create_reminder":
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
-recurrence = dify_result.get('recurrence')
+try:
+    from dateutil import parser
+    recurrence = dify_result.get('recurrence')
 if not due_date_str:
     send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
     return
