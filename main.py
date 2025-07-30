@@ -1,9 +1,9 @@
 # ==============================================================================
 # ||                                                                          ||
-# ||               MEU GESTOR - BACKEND PRINCIPAL (com API)                   ||
+# ||              MEU GESTOR - BACKEND PRINCIPAL (com API)                    ||
 # ||                                                                          ||
 # ==============================================================================
-# VERSÃO 20.2: Corrige método de atribuição de fuso horário.
+# VERSÃO 20.6: Implementa parser de data unificado para robustez de fuso horário.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -32,7 +32,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                   CONFIGURAÇÃO E INICIALIZAÇÃO                           ||
+# ||                     CONFIGURAÇÃO E INICIALIZAÇÃO                         ||
 # ==============================================================================
 
 load_dotenv()
@@ -74,7 +74,7 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                     ||
+# ||                   MODELOS DO BANCO DE DADOS (SQLALCHEMY)                   ||
 # ==============================================================================
 class User(Base):
     __tablename__ = "users"
@@ -178,10 +178,25 @@ def get_db():
     finally:
         db.close()
 
+# ==============================================================================
+# ||                         FUNÇÕES DE LÓGICA E HELPERS                      ||
+# ==============================================================================
 
-# ==============================================================================
-# ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
-# ==============================================================================
+def parse_datetime_brt(dt_str: str) -> datetime:
+    """
+    Analisa uma string de data/hora de forma robusta.
+    - Se a string tiver fuso horário (ex: 'Z' ou '+00:00'), converte para o fuso de São Paulo.
+    - Se a string for "naive" (sem fuso), assume que ela já está no fuso de São Paulo.
+    """
+    if dt_str.endswith("Z"):
+        dt_str = dt_str.replace("Z", "+00:00")
+    
+    dt = datetime.fromisoformat(dt_str)
+    
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TZ_SAO_PAULO)
+    else:
+        return dt.astimezone(TZ_SAO_PAULO)
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
     user = db.query(User).filter(User.phone_number == phone_number).first()
@@ -400,7 +415,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                   ||
+# ||                 FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                 ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -451,7 +466,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                         LÓGICA DE PROCESSAMENTO                          ||
+# ||                           LÓGICA DE PROCESSAMENTO                        ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
@@ -558,7 +573,14 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             except Exception as auto_payment_error:
                 logging.error(f"Erro na automação de pagamento de conta planejada: {auto_payment_error}")
 
-           elif action == "create_reminder":
+        elif action == "register_income":
+            add_income(db, user=user, income_data=dify_result)
+            valor = float(dify_result.get('value', 0))
+            descricao = dify_result.get('description', 'N/A')
+            confirmation = f"💰 Crédito de R$ {valor:.2f} ({descricao}) registrado com sucesso!"
+            send_whatsapp_message(sender_number, confirmation)
+
+        elif action == "create_reminder":
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             recurrence = dify_result.get('recurrence')
@@ -568,27 +590,18 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 return
 
             try:
-                from dateutil import parser
-                parsed_dt = parser.isoparse(due_date_str)
-                if parsed_dt.tzinfo is None:
-                    aware_datetime_brt = parsed_dt.replace(tzinfo=TZ_SAO_PAULO)
-                else:
-                    aware_datetime_brt = parsed_dt.astimezone(TZ_SAO_PAULO)
-            except Exception as e:
-                logging.error(f"Erro ao processar data do lembrete: {e}")
-                send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
-                return
-
-            dify_result['due_date'] = aware_datetime_brt
-            add_reminder(db, user=user, reminder_data=dify_result)
-            
-            data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
-            confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
-            if recurrence == 'monthly':
-                confirmation += " Este lembrete se repetirá mensalmente."
-            
-            send_whatsapp_message(sender_number, confirmation)
-
+                # Usa a nova função unificada para interpretar a data
+                aware_datetime_brt = parse_datetime_brt(due_date_str)
+                
+                dify_result['due_date'] = aware_datetime_brt
+                add_reminder(db, user=user, reminder_data=dify_result)
+                
+                data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
+                confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
+                if recurrence == 'monthly':
+                    confirmation += " Este lembrete se repetirá mensalmente."
+                
+                send_whatsapp_message(sender_number, confirmation)
 
             except (ValueError, TypeError) as e:
                 logging.error(f"Erro ao processar data do lembrete: {e}")
@@ -762,7 +775,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
 # ==============================================================================
-# ||               FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                   ||
+# ||                   FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                 ||
 # ==============================================================================
 
 def generate_monthly_reminders(db: Session):
@@ -865,7 +878,7 @@ def check_and_send_reminders(db: Session):
 
 
 # ==============================================================================
-# ||                       APLICAÇÃO FASTAPI (ROTAS)                          ||
+# ||                        APLICAÇÃO FASTAPI (ROTAS)                         ||
 # ==============================================================================
 
 app = FastAPI()
@@ -880,7 +893,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "20.1_TIMEZONE_FIX"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "20.6_UNIFIED_PARSER"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -1039,8 +1052,10 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
     
     reminder.description = reminder_data.description
     try:
-        reminder.due_date = datetime.fromisoformat(reminder_data.due_date)
-    except ValueError:
+        # Usa a nova função unificada para interpretar a data
+        aware_datetime_brt = parse_datetime_brt(reminder_data.due_date)
+        reminder.due_date = aware_datetime_brt
+    except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Formato de data inválido.")
     
     db.commit()
