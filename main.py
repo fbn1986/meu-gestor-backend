@@ -558,40 +558,37 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
             except Exception as auto_payment_error:
                 logging.error(f"Erro na automação de pagamento de conta planejada: {auto_payment_error}")
 
-                elif action == "create_reminder":
+                        elif action == "create_reminder":
             descricao = dify_result.get('description', 'N/A')
             due_date_str = dify_result.get('due_date')
             recurrence = dify_result.get('recurrence')
-
+            
             if not due_date_str:
                 send_whatsapp_message(sender_number, "Não consegui identificar a data do lembrete.")
                 return
 
             try:
-                # Aceita ISO8601 com ou sem fuso e com Z (UTC)
                 from dateutil import parser
                 parsed_dt = parser.isoparse(due_date_str)
                 if parsed_dt.tzinfo is None:
-                    # Interpreta como BRT caso não tenha fuso
                     aware_datetime_brt = parsed_dt.replace(tzinfo=TZ_SAO_PAULO)
                 else:
-                    # Converte para BRT caso já tenha timezone
                     aware_datetime_brt = parsed_dt.astimezone(TZ_SAO_PAULO)
             except Exception as e:
                 logging.error(f"Erro ao processar data do lembrete: {e}")
                 send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
                 return
 
-            # O banco salva corretamente em UTC
             dify_result['due_date'] = aware_datetime_brt
             add_reminder(db, user=user, reminder_data=dify_result)
-
-            # Mensagem de confirmação já no horário de São Paulo
+            
             data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
             confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
             if recurrence == 'monthly':
                 confirmation += " Este lembrete se repetirá mensalmente."
+            
             send_whatsapp_message(sender_number, confirmation)
+
 
             except (ValueError, TypeError) as e:
                 logging.error(f"Erro ao processar data do lembrete: {e}")
