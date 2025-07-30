@@ -580,6 +580,10 @@ try:
         aware_datetime_brt = parsed_dt.replace(tzinfo=TZ_SAO_PAULO)
     else:
         aware_datetime_brt = parsed_dt.astimezone(TZ_SAO_PAULO)
+except Exception as e:
+    logging.error(f"Erro ao processar data do lembrete: {e}")
+    send_whatsapp_message(sender_number, "Houve um problema ao agendar seu lembrete. Verifique a data e hora.")
+    return
                 
                 # 3. O banco de dados irá salvar isso corretamente em UTC.
                 dify_result['due_date'] = aware_datetime_brt
@@ -898,7 +902,7 @@ def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Se
 @app.get("/api/verify-token/{token}")
 def verify_token(token: str, db: Session = Depends(get_db)):
     token_obj = db.query(AuthToken).filter(AuthToken.token == token).first()
-    if token_obj and token_obj.expires_at > datetime.now(TZ_UTC):
+    if token_obj and token_obj.expires_at > datetime.now(TZ_UTC).replace(tzinfo=None):
         phone_number = token_obj.user.phone_number.split('@')[0]
         db.delete(token_obj)
         db.commit()
