@@ -182,20 +182,22 @@ def get_db():
 # ||                         FUNÇÕES DE LÓGICA E HELPERS                      ||
 # ==============================================================================
 
-def parse_datetime_input(dt_str):
+def parse_datetime_brt(dt_str: str) -> datetime:
+    """
+    - Se dt_str vier com fuso horário, converte para São Paulo.
+    - Se dt_str vier sem fuso, assume que é São Paulo.
+    """
     from datetime import datetime
     from zoneinfo import ZoneInfo
     TZ_SAO_PAULO = ZoneInfo("America/Sao_Paulo")
-    TZ_UTC = ZoneInfo("UTC")
 
     if dt_str.endswith("Z"):
-        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        return dt.astimezone(TZ_UTC)
+        dt_str = dt_str.replace("Z", "+00:00")
     dt = datetime.fromisoformat(dt_str)
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=TZ_SAO_PAULO).astimezone(TZ_UTC)
-    return dt.astimezone(TZ_UTC)
-
+        return dt.replace(tzinfo=TZ_SAO_PAULO)
+    else:
+        return dt.astimezone(TZ_SAO_PAULO)
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
     user = db.query(User).filter(User.phone_number == phone_number).first()
@@ -590,12 +592,10 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
 
             try:
                 # Usa a nova função unificada para interpretar a data
-                dt_utc = parse_datetime_input(due_date_str)
-                
-                dify_result['due_date'] = dt_utc
+                dt_brt = parse_datetime_brt(due_date_str)
+                dify_result['due_date'] = dt_brt
                 add_reminder(db, user=user, reminder_data=dify_result)
-                
-                data_formatada = dt_utc.astimezone(TZ_SAO_PAULO).strftime('%d/%m/%Y às %H:%M')
+                data_formatada = dt_brt.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
                 if recurrence == 'monthly':
                     confirmation += " Este lembrete se repetirá mensalmente."
@@ -1052,8 +1052,8 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
     reminder.description = reminder_data.description
     try:
         # Usa a nova função unificada para interpretar a data
-        dt_utc = parse_datetime_input(reminder_data.due_date)
-        reminder.due_date = dt_utc
+        dt_brt = parse_datetime_brt(reminder_data.due_date)
+        reminder.due_date = dt_brt
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="Formato de data inválido.")
     
