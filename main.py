@@ -3,7 +3,7 @@
 # ||              MEU GESTOR - BACKEND PRINCIPAL (com API)                    ||
 # ||                                                                          ||
 # ==============================================================================
-# VERSÃO 21.0: Adiciona funcionalidade de Ponto Eletrônico.
+# VERSÃO 21.1: Adiciona edição de ponto e relatórios no dashboard.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -87,7 +87,6 @@ class User(Base):
     auth_tokens = relationship("AuthToken", back_populates="user")
     categories = relationship("Category", back_populates="user", cascade="all, delete-orphan")
     planned_expenses = relationship("PlannedExpense", back_populates="user", cascade="all, delete-orphan")
-    # NOVO RELACIONAMENTO
     time_logs = relationship("TimeLog", back_populates="user", cascade="all, delete-orphan")
 
 
@@ -146,7 +145,6 @@ class PlannedExpense(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="planned_expenses")
 
-# NOVO MODELO DE BANCO DE DADOS
 class TimeLog(Base):
     __tablename__ = "time_logs"
     id = Column(Integer, primary_key=True, index=True)
@@ -182,6 +180,10 @@ class PlannedExpenseUpdate(BaseModel):
 class StatusUpdate(BaseModel):
     monthKey: str
     status: str
+# NOVO MODELO PYDANTIC PARA ATUALIZAÇÃO DO PONTO
+class TimeLogUpdate(BaseModel):
+    clock_in: str
+    clock_out: Optional[str] = None
 
 def get_db():
     db = SessionLocal()
@@ -192,8 +194,19 @@ def get_db():
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE LÓGICA DE BANCO DE DADOS                    ||
+# ||                         FUNÇÕES DE LÓGICA E HELPERS                      ||
 # ==============================================================================
+
+def parse_datetime_brt(dt_str: str) -> datetime:
+    if dt_str.endswith("Z"):
+        dt_str = dt_str.replace("Z", "+00:00")
+    
+    dt = datetime.fromisoformat(dt_str)
+    
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TZ_SAO_PAULO)
+    else:
+        return dt.astimezone(TZ_SAO_PAULO)
 
 def get_or_create_user(db: Session, phone_number: str) -> User:
     user = db.query(User).filter(User.phone_number == phone_number).first()
@@ -213,14 +226,11 @@ def create_auth_token(db: Session, user: User) -> str:
     db.commit()
     return token_str
 
-# NOVA FUNÇÃO PARA GERENCIAR O PONTO
 def handle_punch_clock(db: Session, user: User) -> str:
-    """Gerencia a lógica de bater o ponto de entrada e saída."""
     last_log = db.query(TimeLog).filter(TimeLog.user_id == user.id).order_by(TimeLog.id.desc()).first()
     
     now_brt = datetime.now(TZ_SAO_PAULO)
 
-    # Se existe um último registro e a saída está em branco, registra a saída.
     if last_log and last_log.clock_out is None:
         last_log.clock_out = now_brt
         db.commit()
@@ -231,8 +241,6 @@ def handle_punch_clock(db: Session, user: User) -> str:
         
         return (f"✅ Saída registrada às {now_brt.strftime('%H:%M')}!\n"
                 f"Duração do expediente: {int(hours)}h e {int(minutes)}min.")
-
-    # Caso contrário, registra uma nova entrada.
     else:
         new_log = TimeLog(user_id=user.id, clock_in=now_brt)
         db.add(new_log)
@@ -617,17 +625,11 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
                 return
 
             try:
-                # 1. A IA envia uma data/hora local "naive" (sem fuso)
-                naive_datetime = datetime.fromisoformat(due_date_str)
+                aware_datetime_brt = parse_datetime_brt(due_date_str)
                 
-                # 2. Nós informamos ao sistema que essa hora é do fuso de São Paulo
-                aware_datetime_brt = naive_datetime.replace(tzinfo=TZ_SAO_PAULO)
-                
-                # 3. O banco de dados irá salvar isso corretamente em UTC.
                 dify_result['due_date'] = aware_datetime_brt
                 add_reminder(db, user=user, reminder_data=dify_result)
                 
-                # 4. Formatamos a data local (BRT) para a mensagem de confirmação
                 data_formatada = aware_datetime_brt.strftime('%d/%m/%Y às %H:%M')
                 confirmation = f"🗓️ Lembrete agendado: '{descricao}' para {data_formatada}."
                 if recurrence == 'monthly':
@@ -925,7 +927,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "21.0_TIMELOG"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "21.1_TIMELOG_EDIT"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -978,7 +980,6 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     
     planned_expenses = db.query(PlannedExpense).filter(PlannedExpense.user_id == user.id).order_by(PlannedExpense.name).all()
     
-    # NOVA CONSULTA PARA REGISTROS DE PONTO
     time_logs = db.query(TimeLog).filter(TimeLog.user_id == user.id).order_by(TimeLog.clock_in.desc()).all()
 
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
@@ -1006,7 +1007,7 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "categories": categories,
         "reminders": reminders_data,
         "planned_expenses": planned_expenses_data,
-        "time_logs": time_logs_data # NOVO DADO ENVIADO
+        "time_logs": time_logs_data
     }
 
 @app.put("/api/expense/{expense_id}")
@@ -1094,7 +1095,8 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
     
     reminder.description = reminder_data.description
     try:
-        reminder.due_date = datetime.fromisoformat(reminder_data.due_date)
+        # Frontend envia UTC, backend apenas salva.
+        reminder.due_date = datetime.fromisoformat(reminder_data.due_date.replace("Z", "+00:00"))
     except ValueError:
         raise HTTPException(status_code=400, detail="Formato de data inválido.")
     
@@ -1165,6 +1167,31 @@ def update_planned_expense_status(expense_id: int, status_data: StatusUpdate, ph
     
     db.commit()
     return {"status": "success", "message": f"Status para {status_data.monthKey} atualizado."}
+
+# NOVA ROTA PARA EDITAR UM REGISTRO DE PONTO
+@app.put("/api/ponto/{log_id}")
+def update_time_log(log_id: int, time_log_data: TimeLogUpdate, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    log_to_update = db.query(TimeLog).filter(TimeLog.id == log_id, TimeLog.user_id == user.id).first()
+    if not log_to_update:
+        raise HTTPException(status_code=404, detail="Registro de ponto não encontrado.")
+
+    try:
+        log_to_update.clock_in = datetime.fromisoformat(time_log_data.clock_in.replace("Z", "+00:00"))
+        if time_log_data.clock_out:
+            log_to_update.clock_out = datetime.fromisoformat(time_log_data.clock_out.replace("Z", "+00:00"))
+        else:
+            log_to_update.clock_out = None
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Formato de data inválido.")
+
+    db.commit()
+    db.refresh(log_to_update)
+    return {
+        "id": log_to_update.id,
+        "clock_in": log_to_update.clock_in.isoformat(),
+        "clock_out": log_to_update.clock_out.isoformat() if log_to_update.clock_out else None
+    }
 
 
 @app.post("/webhook/evolution")
