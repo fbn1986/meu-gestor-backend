@@ -1,9 +1,9 @@
 # ==============================================================================
 # ||                                                                          ||
-# ||               MEU GESTOR - BACKEND PRINCIPAL (com API)                   ||
+# ||              MEU GESTOR - BACKEND PRINCIPAL (com API)                    ||
 # ||                                                                          ||
 # ==============================================================================
-# VERSÃO 20.2: Corrige método de atribuição de fuso horário.
+# VERSÃO 21.0: Adiciona funcionalidade de Ponto Eletrônico.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -32,7 +32,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 
 # ==============================================================================
-# ||                   CONFIGURAÇÃO E INICIALIZAÇÃO                           ||
+# ||                     CONFIGURAÇÃO E INICIALIZAÇÃO                         ||
 # ==============================================================================
 
 load_dotenv()
@@ -74,7 +74,7 @@ except Exception as e:
 
 
 # ==============================================================================
-# ||               MODELOS DO BANCO DE DADOS (SQLALCHEMY)                     ||
+# ||                   MODELOS DO BANCO DE DADOS (SQLALCHEMY)                   ||
 # ==============================================================================
 class User(Base):
     __tablename__ = "users"
@@ -87,6 +87,8 @@ class User(Base):
     auth_tokens = relationship("AuthToken", back_populates="user")
     categories = relationship("Category", back_populates="user", cascade="all, delete-orphan")
     planned_expenses = relationship("PlannedExpense", back_populates="user", cascade="all, delete-orphan")
+    # NOVO RELACIONAMENTO
+    time_logs = relationship("TimeLog", back_populates="user", cascade="all, delete-orphan")
 
 
 class Expense(Base):
@@ -144,6 +146,16 @@ class PlannedExpense(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="planned_expenses")
 
+# NOVO MODELO DE BANCO DE DADOS
+class TimeLog(Base):
+    __tablename__ = "time_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    clock_in = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(TZ_UTC))
+    clock_out = Column(DateTime(timezone=True), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    user = relationship("User", back_populates="time_logs")
+
+
 Base.metadata.create_all(bind=engine)
 
 # --- Modelos Pydantic ---
@@ -200,6 +212,32 @@ def create_auth_token(db: Session, user: User) -> str:
     db.add(token)
     db.commit()
     return token_str
+
+# NOVA FUNÇÃO PARA GERENCIAR O PONTO
+def handle_punch_clock(db: Session, user: User) -> str:
+    """Gerencia a lógica de bater o ponto de entrada e saída."""
+    last_log = db.query(TimeLog).filter(TimeLog.user_id == user.id).order_by(TimeLog.id.desc()).first()
+    
+    now_brt = datetime.now(TZ_SAO_PAULO)
+
+    # Se existe um último registro e a saída está em branco, registra a saída.
+    if last_log and last_log.clock_out is None:
+        last_log.clock_out = now_brt
+        db.commit()
+        
+        duration = now_brt - last_log.clock_in.astimezone(TZ_SAO_PAULO)
+        hours, remainder = divmod(duration.total_seconds(), 3600)
+        minutes, _ = divmod(remainder, 60)
+        
+        return (f"✅ Saída registrada às {now_brt.strftime('%H:%M')}!\n"
+                f"Duração do expediente: {int(hours)}h e {int(minutes)}min.")
+
+    # Caso contrário, registra uma nova entrada.
+    else:
+        new_log = TimeLog(user_id=user.id, clock_in=now_brt)
+        db.add(new_log)
+        db.commit()
+        return f"✅ Entrada registrada às {now_brt.strftime('%H:%M')}! Bom trabalho! 💪"
 
 def add_expense(db: Session, user: User, expense_data: dict):
     new_expense = Expense(
@@ -400,7 +438,7 @@ def edit_last_expense_value(db: Session, user: User, new_value: float) -> Expens
 
 
 # ==============================================================================
-# ||                   FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                   ||
+# ||                 FUNÇÕES DE COMUNICAÇÃO COM APIS EXTERNAS                 ||
 # ==============================================================================
 
 def transcribe_audio(file_path: str) -> str | None:
@@ -451,7 +489,7 @@ def send_whatsapp_message(phone_number: str, message: str):
 
 
 # ==============================================================================
-# ||                         LÓGICA DE PROCESSAMENTO                          ||
+# ||                           LÓGICA DE PROCESSAMENTO                        ||
 # ==============================================================================
 
 def process_text_message(message_text: str, sender_number: str, db: Session) -> dict | None:
@@ -529,7 +567,11 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
     sender_number = user.phone_number
     
     try:
-        if action == "register_expense":
+        if action == "punch_clock":
+            message = handle_punch_clock(db, user)
+            send_whatsapp_message(sender_number, message)
+
+        elif action == "register_expense":
             add_expense(db, user=user, expense_data=dify_result)
             valor = float(dify_result.get('value', 0))
             descricao = dify_result.get('description', 'N/A')
@@ -765,7 +807,7 @@ def handle_dify_action(dify_result: dict, user: User, db: Session):
         send_whatsapp_message(sender_number, "❌ Ocorreu um erro interno ao processar seu pedido.")
 
 # ==============================================================================
-# ||               FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                   ||
+# ||                   FUNÇÕES DE LEMBRETES (LÓGICA ATUALIZADA)                 ||
 # ==============================================================================
 
 def generate_monthly_reminders(db: Session):
@@ -868,7 +910,7 @@ def check_and_send_reminders(db: Session):
 
 
 # ==============================================================================
-# ||                       APLICAÇÃO FASTAPI (ROTAS)                          ||
+# ||                        APLICAÇÃO FASTAPI (ROTAS)                         ||
 # ==============================================================================
 
 app = FastAPI()
@@ -883,7 +925,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "20.1_TIMEZONE_FIX"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "21.0_TIMELOG"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -936,6 +978,9 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
     
     planned_expenses = db.query(PlannedExpense).filter(PlannedExpense.user_id == user.id).order_by(PlannedExpense.name).all()
     
+    # NOVA CONSULTA PARA REGISTROS DE PONTO
+    time_logs = db.query(TimeLog).filter(TimeLog.user_id == user.id).order_by(TimeLog.clock_in.desc()).all()
+
     expenses_data = [{"id": e.id, "description": e.description, "value": float(e.value), "category": e.category, "date": e.transaction_date.isoformat()} for e in expenses]
     incomes_data = [{"id": i.id, "description": i.description, "value": float(i.value), "date": i.transaction_date.isoformat()} for i in incomes]
     reminders_data = [{"id": r.id, "description": r.description, "due_date": r.due_date.isoformat()} for r in reminders]
@@ -946,6 +991,12 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "dueDay": p.due_day,
         "statuses": json.loads(p.statuses) if p.statuses else {}
     } for p in planned_expenses]
+
+    time_logs_data = [{
+        "id": t.id,
+        "clock_in": t.clock_in.isoformat(),
+        "clock_out": t.clock_out.isoformat() if t.clock_out else None
+    } for t in time_logs]
     
     return {
         "user_id": user.id,
@@ -954,7 +1005,8 @@ def get_user_data(phone_number: str, db: Session = Depends(get_db)):
         "incomes": incomes_data,
         "categories": categories,
         "reminders": reminders_data,
-        "planned_expenses": planned_expenses_data
+        "planned_expenses": planned_expenses_data,
+        "time_logs": time_logs_data # NOVO DADO ENVIADO
     }
 
 @app.put("/api/expense/{expense_id}")
