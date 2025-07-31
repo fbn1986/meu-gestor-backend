@@ -3,7 +3,7 @@
 # ||              MEU GESTOR - BACKEND PRINCIPAL (com API)                    ||
 # ||                                                                          ||
 # ==============================================================================
-# VERSÃO 21.1: Adiciona edição de ponto e relatórios no dashboard.
+# VERSÃO 21.2: Adiciona exclusão de ponto.
 
 # --- Importações de Bibliotecas ---
 import logging
@@ -180,7 +180,6 @@ class PlannedExpenseUpdate(BaseModel):
 class StatusUpdate(BaseModel):
     monthKey: str
     status: str
-# NOVO MODELO PYDANTIC PARA ATUALIZAÇÃO DO PONTO
 class TimeLogUpdate(BaseModel):
     clock_in: str
     clock_out: Optional[str] = None
@@ -927,7 +926,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"Status": "Meu Gestor Backend está online!", "Version": "21.1_TIMELOG_EDIT"}
+    return {"Status": "Meu Gestor Backend está online!", "Version": "21.2_TIMELOG_DELETE"}
 
 @app.get("/trigger/check-reminders/{secret_key}")
 def trigger_reminders(secret_key: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -1095,7 +1094,6 @@ def update_reminder_api(reminder_id: int, reminder_data: ReminderUpdate, phone_n
     
     reminder.description = reminder_data.description
     try:
-        # Frontend envia UTC, backend apenas salva.
         reminder.due_date = datetime.fromisoformat(reminder_data.due_date.replace("Z", "+00:00"))
     except ValueError:
         raise HTTPException(status_code=400, detail="Formato de data inválido.")
@@ -1168,7 +1166,6 @@ def update_planned_expense_status(expense_id: int, status_data: StatusUpdate, ph
     db.commit()
     return {"status": "success", "message": f"Status para {status_data.monthKey} atualizado."}
 
-# NOVA ROTA PARA EDITAR UM REGISTRO DE PONTO
 @app.put("/api/ponto/{log_id}")
 def update_time_log(log_id: int, time_log_data: TimeLogUpdate, phone_number: str, db: Session = Depends(get_db)):
     user = get_user_from_query(db, phone_number)
@@ -1192,6 +1189,18 @@ def update_time_log(log_id: int, time_log_data: TimeLogUpdate, phone_number: str
         "clock_in": log_to_update.clock_in.isoformat(),
         "clock_out": log_to_update.clock_out.isoformat() if log_to_update.clock_out else None
     }
+
+# NOVA ROTA PARA EXCLUIR UM REGISTRO DE PONTO
+@app.delete("/api/ponto/{log_id}")
+def delete_time_log(log_id: int, phone_number: str, db: Session = Depends(get_db)):
+    user = get_user_from_query(db, phone_number)
+    log_to_delete = db.query(TimeLog).filter(TimeLog.id == log_id, TimeLog.user_id == user.id).first()
+    if not log_to_delete:
+        raise HTTPException(status_code=404, detail="Registro de ponto não encontrado.")
+    
+    db.delete(log_to_delete)
+    db.commit()
+    return {"status": "success", "message": "Registro de ponto apagado."}
 
 
 @app.post("/webhook/evolution")
